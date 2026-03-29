@@ -255,33 +255,30 @@ def _simplify(
     merged = np.unique(np.clip(merged, 0, x.size - 1))
 
     # =================================================================
-    # R²-based thinning: find minimum points that achieve the target R²
+    # R²-based build-up: start from 5 points and increase until R² target
     # =================================================================
-    if r2_target is not None and r2_target < 1.0 and len(merged) > 2:
+    if r2_target is not None and r2_target < 1.0 and len(merged) > 5:
         ss_tot = np.sum((y - np.mean(y)) ** 2)
         if ss_tot > 0:
-            # Check if full set already meets the target.
-            y_interp = np.interp(x, x[merged], y[merged])
-            r2_full = 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
-            if r2_full >= r2_target:
-                # Binary search for minimum number of points.
-                lo, hi = 2, len(merged)
-                while lo < hi:
-                    mid = (lo + hi) // 2
-                    sub = np.unique(
-                        np.linspace(0, len(merged) - 1, mid).astype(int)
-                    )
-                    trial = merged[sub]
-                    y_interp = np.interp(x, x[trial], y[trial])
-                    r2 = 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
-                    if r2 >= r2_target:
-                        hi = mid
-                    else:
-                        lo = mid + 1
+            # Binary search: find minimum points (starting from 5) that
+            # achieve the target R².
+            lo, hi = 5, len(merged)
+            while lo < hi:
+                mid = (lo + hi) // 2
                 sub = np.unique(
-                    np.linspace(0, len(merged) - 1, lo).astype(int)
+                    np.linspace(0, len(merged) - 1, mid).astype(int)
                 )
-                merged = merged[sub]
+                trial = merged[sub]
+                y_interp = np.interp(x, x[trial], y[trial])
+                r2 = 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
+                if r2 >= r2_target:
+                    hi = mid
+                else:
+                    lo = mid + 1
+            sub = np.unique(
+                np.linspace(0, len(merged) - 1, lo).astype(int)
+            )
+            merged = merged[sub]
 
     return x[merged], y[merged]
 
@@ -540,21 +537,30 @@ def _simplify_animate(
     y_o = np.asarray(y_orig, dtype=float)
     n_orig = x_o.size
 
-    # --- Precompute simplification at many nmin values ---
-    # Sweep from ~n_orig down to a very aggressive level (5 points).
-    # Use log-spaced nmin values so we see smooth progression at both ends.
-    nmin_values = np.unique(
-        np.logspace(np.log10(max(n_orig, 101)), np.log10(5), n_steps)
+    # --- Precompute simplification at increasing point counts ---
+    # Start from 5 points and build up to the full feature-detected set.
+    # First get all feature-detected indices (no R² thinning).
+    x_full, y_full = _simplify(x_o, y_o, r2_target=None)
+    n_full = x_full.size
+
+    # Generate log-spaced point counts from 5 up to full.
+    pt_counts = np.unique(
+        np.logspace(np.log10(5), np.log10(max(n_full, 6)), n_steps)
         .astype(int)
     )
-    # Always include endpoints.
-    nmin_values = np.unique(np.concatenate([[n_orig], nmin_values, [5]]))
-    nmin_values = np.sort(nmin_values)[::-1]  # descending
+    pt_counts = np.unique(np.concatenate([[5], pt_counts, [n_full]]))
+    pt_counts = np.sort(pt_counts)  # ascending: few → many
 
-    # Run _simplify for each nmin and store results + error.
+    # Build each simplification level by subsampling the full indices.
+    # Use the full feature-detected indices as the pool for subsampling.
+    full_idx = np.sort(np.searchsorted(x_o, x_full))
     steps = []
-    for nmin in nmin_values:
-        x_s, y_s = _simplify(x_o, y_o, nmin=int(nmin))
+    for npts in pt_counts:
+        sub = np.unique(
+            np.linspace(0, len(full_idx) - 1, int(npts)).astype(int)
+        )
+        trial = full_idx[sub]
+        x_s, y_s = x_o[trial], y_o[trial]
         m = _simplify_error(x_o, y_o, x_s, y_s)
         steps.append({
             "npts": m["n_simp"],
@@ -612,20 +618,16 @@ def _simplify_animate(
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", alpha=0.9),
     )
 
-    # --- Error subplot: RMSE vs n_points ---
+    # --- Error subplot: RMSE vs n_points (linear, starting at 0) ---
     rms_nonzero = all_rms[all_rms > 0]
     if rms_nonzero.size > 0:
-        rms_lo = rms_nonzero.min() * 0.3
-        rms_hi = all_rms.max() * 3.0
+        rms_hi = all_rms.max() * 1.1
     else:
-        rms_lo, rms_hi = 1e-10, 1.0
-    ax_err.set_xlim(max(all_npts.min() * 0.7, 3), all_npts.max() * 1.5)
-    ax_err.set_ylim(rms_lo, rms_hi)
-    ax_err.set_xscale("log")
-    ax_err.set_yscale("log")
+        rms_hi = 1.0
+    ax_err.set_xlim(0, all_npts.max() * 1.05)
+    ax_err.set_ylim(0, rms_hi)
     ax_err.set_xlabel(r"Number of points $n$", fontsize=12)
     ax_err.set_ylabel(r"RMSE", fontsize=12)
-    ax_err.invert_xaxis()  # more points on left, fewer on right
 
     err_line, = ax_err.plot([], [], "o-", color="tab:blue", ms=3, lw=1.0)
     err_marker = ax_err.scatter([], [], s=40, color="tab:red", zorder=5,
