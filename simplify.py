@@ -17,7 +17,6 @@ _random_test_curve Generate a random curve that exercises all strategies.
 _simplify_cli      Command-line interface (reads two-column text files).
 """
 
-from functools import reduce
 from pathlib import Path
 from typing import Tuple, Union, Sequence
 
@@ -47,24 +46,25 @@ def _simplify(
     Three independent strategies select "important" indices, which are then
     merged together with the two endpoints:
 
-    1. **Gradient-change detection** (curvature proxy)
-       Computes the fractional change in the first derivative between
-       consecutive points:  ``pct[i] = (dy'[i+1] - dy'[i]) / dy'[i]``.
-       Points where ``|pct| > grad_inc`` are kept.  These mark sharp bends
-       in the curve -- e.g., shocks, discontinuities, or phase transitions.
+    1. **Menger curvature detection** (exact discrete curvature)
+       Computes the Menger curvature κ for each triplet of consecutive
+       points — the reciprocal of the circumradius of the triangle they
+       form.  Points where ``κ > grad_inc`` are kept.  These mark sharp
+       bends in the curve — shocks, discontinuities, or phase transitions.
 
     2. **Sign-change detection** (local extrema)
        Keeps every point where the first derivative changes sign, i.e.,
        every local minimum and maximum of ``y(x)``.
 
     3. **Cumulative-distance sampling** (uniform arc-length in y)
-       The total variation of ``y`` is divided into ``nmin`` equal "distance
-       bins".  One point is selected at each bin boundary.  This gives dense
-       sampling where ``y`` changes rapidly and sparse sampling where ``y``
-       is nearly flat -- adapting automatically to the curve shape.
+       The total variation of ``y`` (i.e., ``sum(|diff(y)|)``) is divided
+       into ``nmin`` equal "distance bins".  One point is selected at each
+       bin boundary.  This gives dense sampling where ``y`` changes rapidly
+       and sparse sampling where ``y`` is nearly flat — adapting
+       automatically to the curve shape.
 
-    For a perfectly flat curve (zero range), the algorithm falls back to
-    uniformly spaced indices.
+    For a perfectly flat curve (zero total variation), the algorithm falls
+    back to uniformly spaced indices.
 
     Parameters
     ----------
@@ -80,11 +80,12 @@ def _simplify(
         the gradient and sign-change detectors.  Clamped to >= 100.
         Default is 100.
     grad_inc : float, optional
-        Fractional gradient-change threshold.  A point is flagged as
-        "important" when the local gradient changes by more than this
-        fraction relative to the previous gradient.  Lower values keep
-        more points (more sensitive to curvature); higher values keep fewer.
-        Default is 1.0 (i.e., 100 % change).
+        Menger curvature threshold.  A point is flagged as "important"
+        when the Menger curvature of its triplet exceeds this value.
+        Units are 1/length in the (x, y) plane, so the appropriate
+        value depends on the scale of the data.  Lower values keep more
+        points (more sensitive to bends); higher values keep fewer.
+        Default is 1.0.
     r2_target : float, optional
         Target R² (coefficient of determination).  After the feature
         detection selects important points, the result is thinned to the
@@ -126,9 +127,9 @@ def _simplify(
     Lower ``grad_inc`` = keep more points (more sensitive to bends).
     Higher ``grad_inc`` = keep fewer points (only the sharpest features).
 
-    >>> # Sensitive: keep points where gradient changes by > 50%
+    >>> # Sensitive: keep points where Menger curvature > 0.5
     >>> x_s, y_s = _simplify(x, y, nmin=100, grad_inc=0.5)
-    >>> # Aggressive: only keep points where gradient changes by > 200%
+    >>> # Aggressive: only keep the sharpest bends (curvature > 2.0)
     >>> x_s, y_s = _simplify(x, y, nmin=100, grad_inc=2.0)
 
     **4. Reading from a file and simplifying:**
@@ -189,50 +190,55 @@ def _simplify(
     nmin = max(int(nmin), 100)
 
     # =====================================================================
-    # Strategy 1: Gradient-based feature detection
+    # Strategy 1: Menger curvature feature detection
     # =====================================================================
-    # Compute the numerical first derivative dy/dx (using central differences).
-    grad = np.gradient(y)
+    # Compute Menger curvature for each interior triplet of consecutive
+    # points.  The Menger curvature κ_i is the reciprocal of the
+    # circumradius of (P_{i-1}, P_i, P_{i+1}).  High curvature marks
+    # sharp bends — shocks, discontinuities, phase transitions.
+    dx1 = np.diff(x[:-1])                          # x[i] - x[i-1]
+    dy1 = np.diff(y[:-1])                          # y[i] - y[i-1]
+    dx2 = np.diff(x[1:])                           # x[i+1] - x[i]
+    dy2 = np.diff(y[1:])                           # y[i+1] - y[i]
 
-    # Build a safe denominator for the fractional change calculation.
-    # Where |grad[i]| is essentially zero (flat region), replace with a
-    # tiny positive constant `eps` to avoid division by zero.
-    eps = 1e-30
-    denom = np.where(
-        np.abs(grad[:-1]) < eps, eps, grad[:-1]
-    )
+    # 2× signed area of the triangle formed by the triplet.
+    cross = dx1 * (dy1 + dy2) - dy1 * (dx1 + dx2)
 
-    # Fractional change in the gradient between consecutive points:
-    #   pct[i] = (grad[i+1] - grad[i]) / grad[i]
-    # This is a discrete second-derivative normalised by the local slope.
-    # Large |pct| means the curve is bending sharply at that point.
-    pct = np.diff(grad) / denom
+    # Side lengths of the triangle.
+    a = np.sqrt(dx1**2 + dy1**2)
+    b = np.sqrt(dx2**2 + dy2**2)
+    c_len = np.sqrt((dx1 + dx2)**2 + (dy1 + dy2)**2)
 
-    # Keep indices where the fractional gradient change exceeds the threshold.
-    important_grad = np.where(np.abs(pct) > grad_inc)[0]
+    denom = a * b * c_len
+    denom[denom < 1e-30] = 1e-30                   # guard degenerate triplets
+
+    kappa = 2.0 * np.abs(cross) / denom            # Menger curvature, len n-2
+
+    # Keep interior indices where curvature exceeds the threshold.
+    # kappa[i] corresponds to original index i+1.
+    important_curv = np.where(kappa > grad_inc)[0] + 1
 
     # Keep indices where the derivative changes sign (local extrema).
+    grad = np.gradient(y)
     # np.sign(grad) is -1, 0, or +1; a nonzero diff marks a sign flip.
     important_sign = np.where(np.diff(np.sign(grad)) != 0)[0]
 
     # =====================================================================
     # Strategy 2: Cumulative-distance sampling in y
     # =====================================================================
-    # Total range of y values.
-    yrng = float(np.nanmax(y) - np.nanmin(y))
+    # Cumulative absolute change in y (total variation up to each point).
+    y_cum = np.cumsum(np.abs(np.diff(y)))
+    total_variation = float(y_cum[-1]) if y_cum.size > 0 else 0.0
 
-    if not np.isfinite(yrng) or yrng == 0:
+    if not np.isfinite(total_variation) or total_variation == 0:
         # Special case: perfectly flat curve (or all NaN).
         # Fall back to uniformly spaced indices.
         idx = np.unique(np.linspace(0, x.size - 1, nmin).astype(int))
         return x[idx], y[idx]
 
     # Maximum allowed cumulative y-distance between kept points.
-    # Dividing the total range by nmin gives roughly nmin bins.
-    maxdist = yrng / nmin
-
-    # Cumulative absolute change in y along the array.
-    y_cum = np.cumsum(np.abs(np.diff(y)))
+    # Dividing the total variation by nmin gives roughly nmin bins.
+    maxdist = total_variation / nmin
 
     # Assign each point to a "distance bin".  When the bin number changes
     # between consecutive points, that boundary is a selected sample.
@@ -240,23 +246,15 @@ def _simplify(
     idx_dist = np.where(bins[:-1] != bins[1:])[0]
 
     # =====================================================================
-    # Strategy 3: Merge all candidates + endpoints
+    # Merge all candidates + endpoints via boolean mask
     # =====================================================================
-    # Union all selected indices from the three strategies, plus the first
-    # and last points (endpoints are always kept).
-    merged = reduce(
-        np.union1d,
-        [
-            np.array([0], dtype=int),              # first point
-            important_grad.astype(int),            # sharp bends
-            important_sign.astype(int),            # local extrema
-            idx_dist.astype(int),                  # arc-length samples
-            np.array([x.size - 1], dtype=int),     # last point
-        ],
-    )
-
-    # Safety: clip to valid index range and deduplicate.
-    merged = np.unique(np.clip(merged, 0, x.size - 1))
+    mask = np.zeros(x.size, dtype=bool)
+    mask[0] = True                                  # first point
+    mask[-1] = True                                 # last point
+    mask[important_curv] = True                     # Menger curvature
+    mask[important_sign] = True                     # local extrema
+    mask[idx_dist] = True                           # cumulative-distance
+    merged = np.where(mask)[0]
 
     # =================================================================
     # R²-based build-up: start from 5 points and increase until R² target
@@ -642,19 +640,16 @@ def _simplify_animate(
                 r2_hit_npts = s["npts"]
                 break
 
-    # Draw persistent vertical line at R² target in bottom panel.
+    # Draw persistent vertical line at R² target in bottom panel with label.
     if r2_hit_npts is not None:
         ax_err.axvline(r2_hit_npts, color="tab:green", ls="--", lw=1.2,
-                       alpha=0.8, zorder=1)
+                       alpha=0.8, zorder=1,
+                       label=f"$R^2 \\geq {r2_target}$ at $n={r2_hit_npts}$")
+        ax_err.legend(loc="upper right")
 
     err_line, = ax_err.plot([], [], "o-", color="tab:blue", ms=3, lw=1.0)
     err_marker = ax_err.scatter([], [], s=40, color="tab:red", zorder=5,
                                 edgecolors="black", linewidths=0.5)
-
-    # Dummy line in top panel legend for R² target label.
-    if r2_hit_npts is not None:
-        ax.plot([], [], "--", color="tab:green", lw=1.2,
-                label=f"$R^2 \\geq {r2_target}$ at $n={r2_hit_npts}$")
 
     def _update(frame):
         if frame < sweep_frames:
@@ -675,12 +670,6 @@ def _simplify_animate(
             f"$R^2 = {s['r2']:.6f}$"
         )
 
-        # Show legend in top panel once R² target is reached.
-        if r2_hit_idx is not None and step_idx >= r2_hit_idx:
-            if not _update.legend_shown:
-                _update.legend_shown = True
-                ax.legend(loc="best")
-
         # --- Bottom panel: build up error curve ---
         # Show all steps up to current.
         vis_npts = all_npts[:step_idx + 1]
@@ -691,7 +680,6 @@ def _simplify_animate(
 
         return line_simp, scatter_simp, info_text, err_line, err_marker
 
-    _update.legend_shown = False
 
     anim = FuncAnimation(fig, _update, frames=n_frames, blit=False)
 
