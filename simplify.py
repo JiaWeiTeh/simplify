@@ -487,6 +487,7 @@ def _simplify_animate(
     duration: float = 6.0,
     title: str = "Curve simplification",
     n_steps: int = 30,
+    r2_target: float = 0.9,
 ) -> None:
     """
     Create an animated GIF showing progressive curve simplification.
@@ -618,20 +619,42 @@ def _simplify_animate(
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", alpha=0.9),
     )
 
-    # --- Error subplot: RMSE vs n_points (linear, starting at 0) ---
+    # --- Error subplot: RMSE vs n_points (log x, starting at 0) ---
     rms_nonzero = all_rms[all_rms > 0]
     if rms_nonzero.size > 0:
         rms_hi = all_rms.max() * 1.1
     else:
         rms_hi = 1.0
-    ax_err.set_xlim(0, all_npts.max() * 1.05)
+    ax_err.set_xlim(max(all_npts.min() * 0.7, 1), all_npts.max() * 1.3)
     ax_err.set_ylim(0, rms_hi)
+    ax_err.set_xscale("log")
     ax_err.set_xlabel(r"Number of points $n$", fontsize=12)
     ax_err.set_ylabel(r"RMSE", fontsize=12)
+
+    # --- Find the step where R² target is first reached ---
+    all_r2 = np.array([s["r2"] for s in steps])
+    r2_hit_idx = None
+    r2_hit_npts = None
+    if r2_target is not None:
+        for i, s in enumerate(steps):
+            if s["r2"] >= r2_target:
+                r2_hit_idx = i
+                r2_hit_npts = s["npts"]
+                break
+
+    # Draw persistent vertical line at R² target in bottom panel.
+    if r2_hit_npts is not None:
+        ax_err.axvline(r2_hit_npts, color="tab:green", ls="--", lw=1.2,
+                       alpha=0.8, zorder=1)
 
     err_line, = ax_err.plot([], [], "o-", color="tab:blue", ms=3, lw=1.0)
     err_marker = ax_err.scatter([], [], s=40, color="tab:red", zorder=5,
                                 edgecolors="black", linewidths=0.5)
+
+    # Dummy line in top panel legend for R² target label.
+    if r2_hit_npts is not None:
+        ax.plot([], [], "--", color="tab:green", lw=1.2,
+                label=f"$R^2 \\geq {r2_target}$ at $n={r2_hit_npts}$")
 
     def _update(frame):
         if frame < sweep_frames:
@@ -652,6 +675,12 @@ def _simplify_animate(
             f"$R^2 = {s['r2']:.6f}$"
         )
 
+        # Show legend in top panel once R² target is reached.
+        if r2_hit_idx is not None and step_idx >= r2_hit_idx:
+            if not _update.legend_shown:
+                _update.legend_shown = True
+                ax.legend(loc="best", fontsize=9)
+
         # --- Bottom panel: build up error curve ---
         # Show all steps up to current.
         vis_npts = all_npts[:step_idx + 1]
@@ -661,6 +690,8 @@ def _simplify_animate(
         err_marker.set_offsets([[s["npts"], s["rms"]]])
 
         return line_simp, scatter_simp, info_text, err_line, err_marker
+
+    _update.legend_shown = False
 
     anim = FuncAnimation(fig, _update, frames=n_frames, blit=False)
 
@@ -1022,6 +1053,7 @@ def _simplify_cli():
             fps=args.animate_fps,
             duration=args.animate_duration,
             title=f"Simplification of {source_label}",
+            r2_target=args.r2_target,
         )
 
 
