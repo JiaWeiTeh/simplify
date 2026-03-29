@@ -1,74 +1,92 @@
 # simplify
 
-Intelligent curve downsampling that preserves sharp bends, local extrema, and overall shape.
+Heuristic downsampling of 1-D curves while preserving sharp bends, local
+extrema, and overall shape. Single file, no dependencies beyond NumPy.
 
 ## Quick start
-
-Try it immediately with a random test curve:
 
 ```bash
 python simplify.py --random --animate simplify.gif
 ```
 
-This generates a synthetic curve (spikes, plateaus, steps, noise) and produces an animated GIF showing the simplification process.
-
-Other quick demos:
-
-```bash
-python simplify.py --random --metrics             # print error metrics
-python simplify.py --random --plot                 # interactive comparison plot
-python simplify.py --random --animate simplify.gif --r2-target 0.95  # tighter fit
-```
-
-## Usage
-
-### Command line
+Generates a synthetic test curve and an animated GIF of the
+simplification process. Other quick demos:
 
 ```bash
-# Simplify a data file
-python simplify.py data.csv -o reduced.csv
-
-# Control quality with R² target (default: 0.9)
-python simplify.py data.csv --r2-target 0.95       # keep more points, better fit
-python simplify.py data.csv --r2-target 0.8        # aggressive compression
-
-# Show metrics and plot
-python simplify.py data.csv --metrics --plot
-
-# Generate animation
-python simplify.py data.csv --animate output.gif
+python simplify.py --random --metrics                          # error table
+python simplify.py --random --plot                             # comparison plot
+python simplify.py --random --animate demo.gif --r2-target 0.95  # tighter fit
 ```
 
-### Python API
+## Command line
+
+```bash
+python simplify.py data.csv -o reduced.csv                    # basic
+python simplify.py data.csv --metrics --plot                   # inspect quality
+python simplify.py data.csv --r2-target 0.95                   # tighter R² target
+python simplify.py data.csv --r2-target 0.8                    # aggressive compression
+python simplify.py data.csv --animate output.gif               # animation
+python simplify.py data.csv --grad-inc 0.5                     # lower curvature threshold
+```
+
+Run `python simplify.py --help` for all options.
+
+## Python API
 
 ```python
+import numpy as np
 from simplify import _simplify, _simplify_error, _simplify_plot
 
-# Basic usage
+x = np.linspace(0, 10, 10000)
+y = np.sin(x) + 0.5 * np.sin(5 * x)
+
+# Simplify (default R² target = 0.9)
 x_s, y_s = _simplify(x, y)
 
-# Custom R² target
-x_s, y_s = _simplify(x, y, r2_target=0.95)
+# Tighter quality target
+x_s, y_s = _simplify(x, y, r2_target=0.99)
 
-# Check quality
+# Keep all feature-detected points (no R² thinning)
+x_s, y_s = _simplify(x, y, r2_target=None)
+
+# Error metrics
 metrics = _simplify_error(x, y, x_s, y_s)
 print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:.1f}x")
 
-# Visualise
-_simplify_plot(x, y, x_s, y_s)
+# Plot
+_simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 ```
 
-## How it works
+## Algorithm
 
-Three strategies independently select important points, which are merged together:
+Three independent strategies select important indices, which are merged
+via boolean mask and then thinned to a target R²:
 
-1. **Gradient-change detection** -- keeps sharp bends and discontinuities
-2. **Sign-change detection** -- keeps local minima and maxima
-3. **Cumulative-distance sampling** -- uniform arc-length coverage
+1. **Menger curvature detection** — computes the discrete curvature
+   (reciprocal of circumradius) for each triplet of consecutive points.
+   Keeps points where curvature exceeds `grad_inc`. Captures shocks,
+   discontinuities, and phase transitions.
 
-An R² target (default 0.9) then thins the result to the minimum points needed to achieve that quality level.
+2. **Sign-change detection** — keeps every point where the first
+   derivative changes sign, i.e., every local minimum and maximum.
+
+3. **Cumulative-distance sampling** — divides the total variation of y
+   (`sum(|diff(y)|)`) into `nmin` equal bins and selects one point at
+   each bin boundary. Dense where y changes rapidly, sparse where flat.
+
+4. **R²-based thinning** — starting from 5 points, binary-searches for
+   the minimum subset of detected points that achieves the target R²
+   (default 0.9).
+
+## Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `nmin` | 100 | Target minimum output samples for distance sampling |
+| `grad_inc` | 1.0 | Menger curvature threshold (units: 1/length in the x-y plane) |
+| `r2_target` | 0.9 | Target R²; set to `None` to keep all detected points |
 
 ## Dependencies
 
-- `numpy`
-- `matplotlib` (optional, for plotting and animation)
+- **numpy** (required)
+- **matplotlib** (optional — plotting and animation)
