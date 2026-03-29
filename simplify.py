@@ -642,19 +642,16 @@ def _simplify_animate(
                 r2_hit_npts = s["npts"]
                 break
 
-    # Draw persistent vertical line at R² target in bottom panel.
+    # Draw persistent vertical line at R² target in bottom panel with label.
     if r2_hit_npts is not None:
         ax_err.axvline(r2_hit_npts, color="tab:green", ls="--", lw=1.2,
-                       alpha=0.8, zorder=1)
+                       alpha=0.8, zorder=1,
+                       label=f"$R^2 \\geq {r2_target}$ at $n={r2_hit_npts}$")
+        ax_err.legend(loc="upper right")
 
     err_line, = ax_err.plot([], [], "o-", color="tab:blue", ms=3, lw=1.0)
     err_marker = ax_err.scatter([], [], s=40, color="tab:red", zorder=5,
                                 edgecolors="black", linewidths=0.5)
-
-    # Dummy line in top panel legend for R² target label.
-    if r2_hit_npts is not None:
-        ax.plot([], [], "--", color="tab:green", lw=1.2,
-                label=f"$R^2 \\geq {r2_target}$ at $n={r2_hit_npts}$")
 
     def _update(frame):
         if frame < sweep_frames:
@@ -675,12 +672,6 @@ def _simplify_animate(
             f"$R^2 = {s['r2']:.6f}$"
         )
 
-        # Show legend in top panel once R² target is reached.
-        if r2_hit_idx is not None and step_idx >= r2_hit_idx:
-            if not _update.legend_shown:
-                _update.legend_shown = True
-                ax.legend(loc="best")
-
         # --- Bottom panel: build up error curve ---
         # Show all steps up to current.
         vis_npts = all_npts[:step_idx + 1]
@@ -691,7 +682,6 @@ def _simplify_animate(
 
         return line_simp, scatter_simp, info_text, err_line, err_marker
 
-    _update.legend_shown = False
 
     anim = FuncAnimation(fig, _update, frames=n_frames, blit=False)
 
