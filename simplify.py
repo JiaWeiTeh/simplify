@@ -28,6 +28,7 @@ def _simplify(
     y_arr: Union[np.ndarray, Sequence[float]],
     nmin: int = 100,
     grad_inc: float = 1.0,
+    r2_target: float = 0.9,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Heuristic downsampling of a curve y(x) to approximately ``nmin`` points,
@@ -80,6 +81,12 @@ def _simplify(
         fraction relative to the previous gradient.  Lower values keep
         more points (more sensitive to curvature); higher values keep fewer.
         Default is 1.0 (i.e., 100 % change).
+    r2_target : float, optional
+        Target R² (coefficient of determination).  After the feature
+        detection selects important points, the result is thinned to the
+        minimum number of points that still achieves this R² value.
+        Set to ``None`` to disable R²-based thinning and keep all
+        detected feature points.  Default is 0.9.
 
     Returns
     -------
@@ -246,6 +253,35 @@ def _simplify(
 
     # Safety: clip to valid index range and deduplicate.
     merged = np.unique(np.clip(merged, 0, x.size - 1))
+
+    # =================================================================
+    # R²-based thinning: find minimum points that achieve the target R²
+    # =================================================================
+    if r2_target is not None and r2_target < 1.0 and len(merged) > 2:
+        ss_tot = np.sum((y - np.mean(y)) ** 2)
+        if ss_tot > 0:
+            # Check if full set already meets the target.
+            y_interp = np.interp(x, x[merged], y[merged])
+            r2_full = 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
+            if r2_full >= r2_target:
+                # Binary search for minimum number of points.
+                lo, hi = 2, len(merged)
+                while lo < hi:
+                    mid = (lo + hi) // 2
+                    sub = np.unique(
+                        np.linspace(0, len(merged) - 1, mid).astype(int)
+                    )
+                    trial = merged[sub]
+                    y_interp = np.interp(x, x[trial], y[trial])
+                    r2 = 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
+                    if r2 >= r2_target:
+                        hi = mid
+                    else:
+                        lo = mid + 1
+                sub = np.unique(
+                    np.linspace(0, len(merged) - 1, lo).astype(int)
+                )
+                merged = merged[sub]
 
     return x[merged], y[merged]
 
@@ -881,6 +917,13 @@ def _simplify_cli():
         help="Animation frames per second (default: 30).",
     )
     parser.add_argument(
+        "--r2-target",
+        type=float,
+        default=0.9,
+        help="Target R² quality (default: 0.9).  Points are thinned until "
+             "R² drops to this value.  Use None to disable.",
+    )
+    parser.add_argument(
         "--random",
         action="store_true",
         help=(
@@ -929,7 +972,8 @@ def _simplify_cli():
         parser.error("either provide an input file or use --random.")
 
     # --- Simplify ---
-    x_out, y_out = _simplify(x, y, nmin=args.nmin, grad_inc=args.grad_inc)
+    x_out, y_out = _simplify(x, y, nmin=args.nmin, grad_inc=args.grad_inc,
+                              r2_target=args.r2_target)
 
     # --- Write output ---
     np.savetxt(
