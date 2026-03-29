@@ -18,9 +18,13 @@ _simplify_cli      Command-line interface (reads two-column text files).
 """
 
 from functools import reduce
+from pathlib import Path
 from typing import Tuple, Union, Sequence
 
 import numpy as np
+
+# Path to the bundled matplotlib style file.
+_STYLE_FILE = Path(__file__).parent / "simplify.mplstyle"
 
 
 def _simplify(
@@ -424,59 +428,60 @@ def _simplify_plot(
     """
     import matplotlib.pyplot as plt
 
-    x_o = np.asarray(x_orig, dtype=float)
-    y_o = np.asarray(y_orig, dtype=float)
-    x_s = np.asarray(x_simp, dtype=float)
-    y_s = np.asarray(y_simp, dtype=float)
+    with plt.style.context(str(_STYLE_FILE)):
+        x_o = np.asarray(x_orig, dtype=float)
+        y_o = np.asarray(y_orig, dtype=float)
+        x_s = np.asarray(x_simp, dtype=float)
+        y_s = np.asarray(y_simp, dtype=float)
 
-    # Compute metrics and residual (interpolation done once, inside _simplify_error).
-    metrics = _simplify_error(x_o, y_o, x_s, y_s)
-    residual = y_o - np.interp(x_o, x_s, y_s)
+        # Compute metrics and residual.
+        metrics = _simplify_error(x_o, y_o, x_s, y_s)
+        residual = y_o - np.interp(x_o, x_s, y_s)
 
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(10, 6), sharex=True,
-        gridspec_kw={"height_ratios": [3, 1]},
-        layout="constrained",
-    )
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1, figsize=(7, 5.5), sharex=True,
+            gridspec_kw={"height_ratios": [3, 1]},
+            layout="constrained",
+        )
 
-    # --- Top panel: curves ---
-    ax1.plot(x_o, y_o, "-", color="0.6", lw=1.0,
-             label=f"original ({metrics['n_orig']} pts)")
-    ax1.plot(x_s, y_s, "o-", color="tab:red", ms=2.5, lw=0.8,
-             label=f"simplified ({metrics['n_simp']} pts)")
-    ax1.set_ylabel("y")
-    ax1.set_title(title)
-    ax1.legend(loc="best", fontsize=9)
+        # --- Top panel: curves ---
+        ax1.plot(x_o, y_o, "-", color="0.6", lw=0.8,
+                 label=f"original ({metrics['n_orig']} pts)")
+        ax1.plot(x_s, y_s, "o-", color="tab:red", ms=2.5, lw=0.8,
+                 label=f"simplified ({metrics['n_simp']} pts)")
+        ax1.set_ylabel(r"$y$")
+        ax1.set_title(title)
+        ax1.legend(loc="best")
 
-    # --- Bottom panel: residual ---
-    ax2.fill_between(x_o, residual, 0, color="tab:blue", alpha=0.3)
-    ax2.plot(x_o, residual, "-", color="tab:blue", lw=0.5)
-    ax2.axhline(0, color="k", lw=0.5, ls="--")
-    ax2.set_ylabel("residual")
-    ax2.set_xlabel("x")
+        # --- Bottom panel: residual ---
+        ax2.fill_between(x_o, residual, 0, color="tab:blue", alpha=0.3)
+        ax2.plot(x_o, residual, "-", color="tab:blue", lw=0.5)
+        ax2.axhline(0, color="k", lw=0.5, ls="--")
+        ax2.set_ylabel(r"residual")
+        ax2.set_xlabel(r"$x$")
 
-    # Annotate with key metrics inside the residual panel.
-    info = (
-        f"RMSE = {metrics['rms_err']:.2e}    "
-        f"MAE = {metrics['mean_abs_err']:.2e}    "
-        f"max|err| = {metrics['max_abs_err']:.2e}    "
-        f"R\u00b2 = {metrics['r_squared']:.6f}    "
-        f"compression = {metrics['compression']:.1f}x"
-    )
-    ax2.text(
-        0.5, 0.02, info,
-        transform=ax2.transAxes, ha="center", va="bottom", fontsize=8,
-        bbox=dict(boxstyle="round,pad=0.3", fc="lightyellow", ec="0.8", alpha=0.9),
-    )
+        # Annotate with key metrics inside the residual panel.
+        info = (
+            rf"RMSE $= {metrics['rms_err']:.2e}$    "
+            rf"MAE $= {metrics['mean_abs_err']:.2e}$    "
+            rf"$R^2 = {metrics['r_squared']:.6f}$    "
+            rf"compression $= {metrics['compression']:.1f}\times$"
+        )
+        ax2.text(
+            0.5, 0.02, info,
+            transform=ax2.transAxes, ha="center", va="bottom", fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.3", fc="lightyellow", ec="0.8",
+                      alpha=0.9),
+        )
 
-    if save_path is not None:
-        fig.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Figure saved to '{save_path}'.")
+        if save_path is not None:
+            fig.savefig(save_path)
+            print(f"Figure saved to '{save_path}'.")
 
-    if show:
-        plt.show()
-    else:
-        plt.close(fig)
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
 
 
 def _simplify_animate(
@@ -527,12 +532,7 @@ def _simplify_animate(
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
 
-    # --- LaTeX-style serif fonts ---
-    plt.rcParams.update({
-        "font.family": "serif",
-        "mathtext.fontset": "cm",
-        "axes.formatter.use_mathtext": True,
-    })
+    plt.style.use(str(_STYLE_FILE))
 
     x_o = np.asarray(x_orig, dtype=float)
     y_o = np.asarray(y_orig, dtype=float)
@@ -596,15 +596,15 @@ def _simplify_animate(
 
     # --- Set up figure ---
     fig, (ax, ax_err) = plt.subplots(
-        2, 1, figsize=(10, 6.5),
+        2, 1, figsize=(7, 5.5),
         gridspec_kw={"height_ratios": [3, 1], "hspace": 0.30},
     )
     margin = 0.05 * (np.nanmax(y_o) - np.nanmin(y_o) + 1e-30)
     ax.set_xlim(x_o[0], x_o[-1])
     ax.set_ylim(np.nanmin(y_o) - margin, np.nanmax(y_o) + margin)
-    ax.set_ylabel(r"$y$", fontsize=12)
-    ax.set_xlabel(r"$x$", fontsize=12)
-    ax.set_title(title, fontsize=14)
+    ax.set_ylabel(r"$y$")
+    ax.set_xlabel(r"$x$")
+    ax.set_title(title)
 
     # Thin underlying curve (always visible).
     ax.plot(x_o, y_o, "-", color="0.75", lw=0.8, zorder=1)
@@ -619,7 +619,7 @@ def _simplify_animate(
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", alpha=0.9),
     )
 
-    # --- Error subplot: RMSE vs n_points (log x, starting at 0) ---
+    # --- Error subplot: RMSE vs n_points (log x) ---
     rms_nonzero = all_rms[all_rms > 0]
     if rms_nonzero.size > 0:
         rms_hi = all_rms.max() * 1.1
@@ -628,8 +628,8 @@ def _simplify_animate(
     ax_err.set_xlim(max(all_npts.min() * 0.7, 1), all_npts.max() * 1.3)
     ax_err.set_ylim(0, rms_hi)
     ax_err.set_xscale("log")
-    ax_err.set_xlabel(r"Number of points $n$", fontsize=12)
-    ax_err.set_ylabel(r"RMSE", fontsize=12)
+    ax_err.set_xlabel(r"Number of points $n$")
+    ax_err.set_ylabel(r"RMSE")
 
     # --- Find the step where R² target is first reached ---
     all_r2 = np.array([s["r2"] for s in steps])
@@ -679,7 +679,7 @@ def _simplify_animate(
         if r2_hit_idx is not None and step_idx >= r2_hit_idx:
             if not _update.legend_shown:
                 _update.legend_shown = True
-                ax.legend(loc="best", fontsize=9)
+                ax.legend(loc="best")
 
         # --- Bottom panel: build up error curve ---
         # Show all steps up to current.
