@@ -297,18 +297,36 @@ def _simplify(
             # Convert to actual data indices via merged[order].
             prioritised = merged[order[:count]]
 
+            # Helper: compute R² for the first n points of prioritised.
+            def _r2_at(n):
+                trial = np.sort(prioritised[:n])
+                y_interp = np.interp(x, x[trial], y[trial])
+                return 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
+
             # Binary search: find minimum count from prioritised pool.
             lo, hi = 5, len(prioritised)
             while lo < hi:
                 mid = (lo + hi) // 2
-                trial = np.sort(prioritised[:mid])
-                y_interp = np.interp(x, x[trial], y[trial])
-                r2 = 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
-                if r2 >= r2_target:
+                if _r2_at(mid) >= r2_target:
                     hi = mid
                 else:
                     lo = mid + 1
-            merged = np.sort(prioritised[:lo])
+
+            # Stability check: scan forward from lo until R² >= target
+            # for 3 consecutive values, guarding against local dips
+            # caused by noisy points.
+            stable_run = 0
+            n = lo
+            while n <= len(prioritised):
+                if _r2_at(n) >= r2_target:
+                    stable_run += 1
+                    if stable_run >= 3:
+                        break
+                else:
+                    stable_run = 0
+                n += 1
+
+            merged = np.sort(prioritised[:n])
 
     return x[merged], y[merged]
 
