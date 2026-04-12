@@ -26,6 +26,75 @@ import numpy as np
 _STYLE_FILE = Path(__file__).parent / "simplify.mplstyle"
 
 
+def _peak_prominences(y: np.ndarray, idx: np.ndarray) -> np.ndarray:
+    """
+    Compute topological persistence (peak prominence) for local extrema.
+
+    For each index ``p`` in ``idx`` (a local maximum or minimum of ``y``),
+    returns how much the curve must descend from a max (or ascend from a
+    min) before reaching a point more extreme than ``y[p]``, or the
+    boundary.  This is equivalent to the persistence of the extremum in
+    the sublevel-set filtration of ``y``.
+
+    A very tall, narrow spike has large prominence.  A small wiggle has
+    small prominence.  The measure is *not* affected by a feature's
+    width — only its amplitude relative to surrounding terrain.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        The 1-D signal.
+    idx : np.ndarray
+        Indices of local extrema (peaks and troughs).
+
+    Returns
+    -------
+    prominences : np.ndarray
+        Non-negative prominence value for each index in ``idx``.
+    """
+    n = y.size
+    proms = np.empty(idx.size, dtype=float)
+    for k, p in enumerate(idx):
+        yp = y[p]
+        # Classify: local max if higher than both immediate neighbours.
+        lo = max(p - 1, 0)
+        hi = min(p + 1, n - 1)
+        is_max = yp >= y[lo] and yp >= y[hi]
+
+        if is_max:
+            # Walk outward until we find a point taller than yp; track
+            # the lowest value encountered on each side.
+            left_min = yp
+            i = p - 1
+            while i >= 0 and y[i] <= yp:
+                if y[i] < left_min:
+                    left_min = y[i]
+                i -= 1
+            right_min = yp
+            i = p + 1
+            while i < n and y[i] <= yp:
+                if y[i] < right_min:
+                    right_min = y[i]
+                i += 1
+            proms[k] = yp - max(left_min, right_min)
+        else:
+            # Local min: symmetric with max and min swapped.
+            left_max = yp
+            i = p - 1
+            while i >= 0 and y[i] >= yp:
+                if y[i] > left_max:
+                    left_max = y[i]
+                i -= 1
+            right_max = yp
+            i = p + 1
+            while i < n and y[i] >= yp:
+                if y[i] > right_max:
+                    right_max = y[i]
+                i += 1
+            proms[k] = min(left_max, right_max) - yp
+    return proms
+
+
 def _simplify(
     x_arr: Union[np.ndarray, Sequence[float]],
     y_arr: Union[np.ndarray, Sequence[float]],
@@ -223,6 +292,23 @@ def _simplify(
     # np.sign(grad) is -1, 0, or +1; a nonzero diff marks a sign flip.
     important_sign = np.where(np.diff(np.sign(grad)) != 0)[0]
 
+    # ---------------------------------------------------------------
+    # Topological persistence: compute peak prominence for every
+    # extremum.  Extrema with prominence above ``prom_thresh`` (a
+    # fraction of the total y-range) are classified as PROMINENT —
+    # topologically persistent features that must never be dropped,
+    # regardless of the R² budget.  This guarantees that a big dip or
+    # spike present at budget N is also present at N+1, N+2, …
+    # ---------------------------------------------------------------
+    y_range = float(np.nanmax(y) - np.nanmin(y))
+    prom_thresh_frac = 0.05               # 5 % of total y-range
+    if important_sign.size > 0 and y_range > 0:
+        proms = _peak_prominences(y, important_sign)
+        prominent_mask = proms >= prom_thresh_frac * y_range
+        prominent_idx = important_sign[prominent_mask]
+    else:
+        prominent_idx = np.array([], dtype=int)
+
     # =====================================================================
     # Strategy 2: Cumulative-distance sampling in y
     # =====================================================================
@@ -295,7 +381,20 @@ def _simplify(
 
             # order[:count] maps position-in-merged to bisection priority.
             # Convert to actual data indices via merged[order].
-            prioritised = merged[order[:count]]
+            bisection_pool = merged[order[:count]]
+
+            # Prepend PROMINENT extrema (high topological persistence)
+            # so they are always included in any trial subset.  The
+            # remainder of the bisection ordering follows, with
+            # duplicates removed.  This guarantees that features with
+            # large prominence never disappear as n grows.
+            if prominent_idx.size > 0:
+                rest_mask = ~np.isin(bisection_pool, prominent_idx)
+                prioritised = np.concatenate(
+                    [prominent_idx, bisection_pool[rest_mask]]
+                )
+            else:
+                prioritised = bisection_pool
 
             # Helper: compute R² for the first n points of prioritised.
             def _r2_at(n):
@@ -596,15 +695,55 @@ def _simplify_animate(
     pt_counts = np.unique(np.concatenate([[5], pt_counts, [n_full]]))
     pt_counts = np.sort(pt_counts)  # ascending: few → many
 
-    # Build each simplification level by subsampling the full indices.
-    # Use the full feature-detected indices as the pool for subsampling.
+    # Build each simplification level using the same prioritised
+    # ordering _simplify uses internally: prominent extrema first (so
+    # big features are always present), then hierarchical bisection of
+    # the remaining feature-detected indices.
     full_idx = np.sort(np.searchsorted(x_o, x_full))
+
+    # Compute prominence for local extrema and flag the topologically
+    # persistent ones.
+    grad_o = np.gradient(y_o)
+    sign_idx = np.where(np.diff(np.sign(grad_o)) != 0)[0]
+    y_rng = float(np.nanmax(y_o) - np.nanmin(y_o))
+    if sign_idx.size > 0 and y_rng > 0:
+        proms = _peak_prominences(y_o, sign_idx)
+        prominent_idx = sign_idx[proms >= 0.05 * y_rng]
+    else:
+        prominent_idx = np.array([], dtype=int)
+
+    # Hierarchical bisection of full_idx positions.
+    n_f = len(full_idx)
+    order = np.empty(n_f, dtype=int)
+    order[0] = 0
+    order[1] = n_f - 1
+    count = 2
+    queue = [(0, n_f - 1)]
+    while queue:
+        nq = []
+        for lo_q, hi_q in queue:
+            if hi_q - lo_q <= 1:
+                continue
+            mid_q = (lo_q + hi_q) // 2
+            order[count] = mid_q
+            count += 1
+            nq.append((lo_q, mid_q))
+            nq.append((mid_q, hi_q))
+        queue = nq
+    bisection_pool = full_idx[order[:count]]
+
+    if prominent_idx.size > 0:
+        rest_mask = ~np.isin(bisection_pool, prominent_idx)
+        prioritised = np.concatenate(
+            [prominent_idx, bisection_pool[rest_mask]]
+        )
+    else:
+        prioritised = bisection_pool
+
     steps = []
     for npts in pt_counts:
-        sub = np.unique(
-            np.linspace(0, len(full_idx) - 1, int(npts)).astype(int)
-        )
-        trial = full_idx[sub]
+        n_take = min(int(npts), len(prioritised))
+        trial = np.sort(prioritised[:n_take])
         x_s, y_s = x_o[trial], y_o[trial]
         m = _simplify_error(x_o, y_o, x_s, y_s)
         steps.append({
