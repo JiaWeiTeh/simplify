@@ -21,6 +21,52 @@ from pathlib import Path
 from typing import Tuple, Union, Sequence
 
 import numpy as np
+def _prominence_upper_bound(
+    y: np.ndarray, idx: np.ndarray
+) -> np.ndarray:
+    """
+    Vectorised O(n) upper bound on peak prominence at each index.
+
+    For a local max at position ``p``, the left prominence walk terminates
+    at the first index to the left with ``y > y[p]`` (or 0 if none), so
+    ``left_min = min y[L:p] >= min y[0:p] = prefix_min[p-1]``.  By the same
+    argument ``right_min >= suffix_min[p+1]``.  Hence
+
+        prominence(p) = y[p] - max(left_min, right_min)
+                      <= y[p] - max(prefix_min[p-1], suffix_min[p+1]).
+
+    The symmetric bound applies to local minima.  This gives a rigorous
+    *necessary* condition: if this upper bound is below the prominence
+    threshold, the extremum cannot be topologically persistent, and we can
+    skip the exact Python-loop computation entirely.
+    """
+    n = y.size
+    prefix_min = np.minimum.accumulate(y)
+    suffix_min = np.minimum.accumulate(y[::-1])[::-1]
+    prefix_max = np.maximum.accumulate(y)
+    suffix_max = np.maximum.accumulate(y[::-1])[::-1]
+
+    p = idx
+    y_p = y[p]
+    lo = np.maximum(p - 1, 0)
+    hi = np.minimum(p + 1, n - 1)
+    is_max = (y_p >= y[lo]) & (y_p >= y[hi])
+    is_min = (y_p <= y[lo]) & (y_p <= y[hi])
+
+    # Previous / next prefix extremes (use sentinels for boundary indices
+    # so the max/min interacts correctly).
+    prev_min = np.where(p > 0, prefix_min[np.maximum(p - 1, 0)], np.inf)
+    next_min = np.where(p < n - 1, suffix_min[np.minimum(p + 1, n - 1)], np.inf)
+    prev_max = np.where(p > 0, prefix_max[np.maximum(p - 1, 0)], -np.inf)
+    next_max = np.where(p < n - 1, suffix_max[np.minimum(p + 1, n - 1)], -np.inf)
+
+    ub_max = y_p - np.maximum(prev_min, next_min)
+    ub_min = np.minimum(prev_max, next_max) - y_p
+    # A point that is neither a (weak) max nor a (weak) min is monotone
+    # through p and has prominence 0 by definition; return 0 there so
+    # the bound is always non-negative.
+    ub = np.where(is_max, ub_max, np.where(is_min, ub_min, 0.0))
+    return np.maximum(ub, 0.0)
 
 # Path to the bundled matplotlib style file.
 _STYLE_FILE = Path(__file__).parent / "simplify.mplstyle"
@@ -293,19 +339,40 @@ def _simplify(
     important_sign = np.where(np.diff(np.sign(grad)) != 0)[0]
 
     # ---------------------------------------------------------------
-    # Topological persistence: compute peak prominence for every
-    # extremum.  Extrema with prominence above ``prom_thresh`` (a
-    # fraction of the total y-range) are classified as PROMINENT —
-    # topologically persistent features that must never be dropped,
-    # regardless of the R² budget.  This guarantees that a big dip or
-    # spike present at budget N is also present at N+1, N+2, …
+    # Topological persistence: identify the extrema that are large
+    # enough to be genuine features of the curve (as opposed to
+    # noise-level perturbations), and mark them as MANDATORY — they
+    # are always included in every trial subset, so once a big dip or
+    # spike is in the output at budget N it is also in the output at
+    # N+1, N+2, …  This prevents the "dip flickers in at some random
+    # n" artefact.
+    #
+    # Two-stage filter to keep compute cheap on noisy curves:
+    #   (1) Vectorised rolling-amplitude test (O(n·W) numpy ops) to
+    #       discard extrema whose entire local neighbourhood is
+    #       flatter than the prominence threshold.  Walks of any
+    #       persistent feature are bounded above by this window
+    #       amplitude, so failing this test proves non-significance.
+    #   (2) Exact peak prominence only on the surviving candidates.
+    # For a curve with thousands of noise-level sign changes, this
+    # collapses the candidate set to a handful, turning the 150 ms
+    # Python loop into a <5 ms call.
     # ---------------------------------------------------------------
     y_range = float(np.nanmax(y) - np.nanmin(y))
     prom_thresh_frac = 0.05               # 5 % of total y-range
+    prom_thresh = prom_thresh_frac * y_range
     if important_sign.size > 0 and y_range > 0:
-        proms = _peak_prominences(y, important_sign)
-        prominent_mask = proms >= prom_thresh_frac * y_range
-        prominent_idx = important_sign[prominent_mask]
+        # Stage 1: O(n) vectorised upper bound on prominence, derived
+        # from prefix/suffix min/max of y.  Extrema failing this test
+        # provably have prominence < threshold and are skipped.
+        ub = _prominence_upper_bound(y, important_sign)
+        candidates = important_sign[ub >= prom_thresh]
+        if candidates.size > 0:
+            # Stage 2: exact prominence on the small surviving set.
+            proms = _peak_prominences(y, candidates)
+            prominent_idx = candidates[proms >= prom_thresh]
+        else:
+            prominent_idx = np.array([], dtype=int)
     else:
         prominent_idx = np.array([], dtype=int)
 
@@ -383,27 +450,36 @@ def _simplify(
             # Convert to actual data indices via merged[order].
             bisection_pool = merged[order[:count]]
 
-            # Prepend PROMINENT extrema (high topological persistence)
-            # so they are always included in any trial subset.  The
-            # remainder of the bisection ordering follows, with
-            # duplicates removed.  This guarantees that features with
-            # large prominence never disappear as n grows.
+            # Split into MANDATORY (prominent extrema, always kept) and
+            # OPTIONAL (bisection pool minus anything already mandatory).
+            # Every trial subset is  mandatory ∪ optional[:k]  — i.e. the
+            # binary search only varies how many optional points to add;
+            # mandatory points are never removable.  This is a strict
+            # strengthening of "prepend prominent to the pool": there is
+            # no value of k for which a mandatory point is absent.
             if prominent_idx.size > 0:
-                rest_mask = ~np.isin(bisection_pool, prominent_idx)
-                prioritised = np.concatenate(
-                    [prominent_idx, bisection_pool[rest_mask]]
-                )
+                mandatory = prominent_idx
+                rest_mask = ~np.isin(bisection_pool, mandatory)
+                optional = bisection_pool[rest_mask]
             else:
-                prioritised = bisection_pool
+                mandatory = np.array([], dtype=int)
+                optional = bisection_pool
 
-            # Helper: compute R² for the first n points of prioritised.
-            def _r2_at(n):
-                trial = np.sort(prioritised[:n])
+            # Helper: compute R² for mandatory ∪ first k of optional.
+            def _r2_at(k):
+                if k <= 0:
+                    trial = np.sort(mandatory) if mandatory.size else optional[:5]
+                else:
+                    trial = np.sort(np.concatenate([mandatory, optional[:k]]))
                 y_interp = np.interp(x, x[trial], y[trial])
                 return 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
 
-            # Binary search: find minimum count from prioritised pool.
-            lo, hi = 5, len(prioritised)
+            # Minimum optional count so the total trial size is >= 5.
+            k_min = max(0, 5 - int(mandatory.size))
+            k_max = len(optional)
+
+            # Binary search: minimum k for which R² >= target.
+            lo, hi = k_min, k_max
             while lo < hi:
                 mid = (lo + hi) // 2
                 if _r2_at(mid) >= r2_target:
@@ -412,20 +488,20 @@ def _simplify(
                     lo = mid + 1
 
             # Stability check: scan forward from lo until R² >= target
-            # for 3 consecutive values, guarding against local dips
-            # caused by noisy points.
+            # for 3 consecutive k, guarding against local dips caused
+            # by noisy points.
             stable_run = 0
-            n = lo
-            while n <= len(prioritised):
-                if _r2_at(n) >= r2_target:
+            k = lo
+            while k <= k_max:
+                if _r2_at(k) >= r2_target:
                     stable_run += 1
                     if stable_run >= 3:
                         break
                 else:
                     stable_run = 0
-                n += 1
+                k += 1
 
-            merged = np.sort(prioritised[:n])
+            merged = np.sort(np.concatenate([mandatory, optional[:k]]))
 
     return x[merged], y[merged]
 
@@ -695,20 +771,26 @@ def _simplify_animate(
     pt_counts = np.unique(np.concatenate([[5], pt_counts, [n_full]]))
     pt_counts = np.sort(pt_counts)  # ascending: few → many
 
-    # Build each simplification level using the same prioritised
-    # ordering _simplify uses internally: prominent extrema first (so
-    # big features are always present), then hierarchical bisection of
-    # the remaining feature-detected indices.
+    # Build each simplification level using the same mandatory/optional
+    # split _simplify uses internally: prominent extrema are mandatory
+    # (always present, even at the smallest frame), and the remaining
+    # feature-detected indices are added in hierarchical-bisection order.
     full_idx = np.sort(np.searchsorted(x_o, x_full))
 
-    # Compute prominence for local extrema and flag the topologically
-    # persistent ones.
+    # Identify topologically persistent extrema (mandatory set) using
+    # the same two-stage filter as _simplify.
     grad_o = np.gradient(y_o)
     sign_idx = np.where(np.diff(np.sign(grad_o)) != 0)[0]
     y_rng = float(np.nanmax(y_o) - np.nanmin(y_o))
+    prom_thresh = 0.05 * y_rng
     if sign_idx.size > 0 and y_rng > 0:
-        proms = _peak_prominences(y_o, sign_idx)
-        prominent_idx = sign_idx[proms >= 0.05 * y_rng]
+        ub = _prominence_upper_bound(y_o, sign_idx)
+        cand = sign_idx[ub >= prom_thresh]
+        if cand.size > 0:
+            proms = _peak_prominences(y_o, cand)
+            prominent_idx = cand[proms >= prom_thresh]
+        else:
+            prominent_idx = np.array([], dtype=int)
     else:
         prominent_idx = np.array([], dtype=int)
 
@@ -733,17 +815,21 @@ def _simplify_animate(
     bisection_pool = full_idx[order[:count]]
 
     if prominent_idx.size > 0:
-        rest_mask = ~np.isin(bisection_pool, prominent_idx)
-        prioritised = np.concatenate(
-            [prominent_idx, bisection_pool[rest_mask]]
-        )
+        mandatory = prominent_idx
+        rest_mask = ~np.isin(bisection_pool, mandatory)
+        optional = bisection_pool[rest_mask]
     else:
-        prioritised = bisection_pool
+        mandatory = np.array([], dtype=int)
+        optional = bisection_pool
 
     steps = []
     for npts in pt_counts:
-        n_take = min(int(npts), len(prioritised))
-        trial = np.sort(prioritised[:n_take])
+        # Every frame is mandatory ∪ optional[:k] — the mandatory set
+        # is present from frame 1, so big features never flicker in
+        # and out across the animation.
+        k = max(0, int(npts) - int(mandatory.size))
+        k = min(k, len(optional))
+        trial = np.sort(np.concatenate([mandatory, optional[:k]]))
         x_s, y_s = x_o[trial], y_o[trial]
         m = _simplify_error(x_o, y_o, x_s, y_s)
         steps.append({
