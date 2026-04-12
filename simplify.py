@@ -13,6 +13,7 @@ _simplify          Core downsampling algorithm.
 _simplify_error    Error metrics (RMSE, MAE, R², compression, …).
 _simplify_plot     Static before/after comparison plot.
 _simplify_animate  Animated GIF/MP4 of the simplification process.
+_peak_prominences  1-D topological persistence (O(n log n)).
 _random_test_curve Generate a random curve that exercises all strategies.
 _simplify_cli      Command-line interface (reads two-column text files).
 """
@@ -21,55 +22,83 @@ from pathlib import Path
 from typing import Tuple, Union, Sequence
 
 import numpy as np
-def _prominence_upper_bound(
-    y: np.ndarray, idx: np.ndarray
-) -> np.ndarray:
-    """
-    Vectorised O(n) upper bound on peak prominence at each index.
-
-    For a local max at position ``p``, the left prominence walk terminates
-    at the first index to the left with ``y > y[p]`` (or 0 if none), so
-    ``left_min = min y[L:p] >= min y[0:p] = prefix_min[p-1]``.  By the same
-    argument ``right_min >= suffix_min[p+1]``.  Hence
-
-        prominence(p) = y[p] - max(left_min, right_min)
-                      <= y[p] - max(prefix_min[p-1], suffix_min[p+1]).
-
-    The symmetric bound applies to local minima.  This gives a rigorous
-    *necessary* condition: if this upper bound is below the prominence
-    threshold, the extremum cannot be topologically persistent, and we can
-    skip the exact Python-loop computation entirely.
-    """
-    n = y.size
-    prefix_min = np.minimum.accumulate(y)
-    suffix_min = np.minimum.accumulate(y[::-1])[::-1]
-    prefix_max = np.maximum.accumulate(y)
-    suffix_max = np.maximum.accumulate(y[::-1])[::-1]
-
-    p = idx
-    y_p = y[p]
-    lo = np.maximum(p - 1, 0)
-    hi = np.minimum(p + 1, n - 1)
-    is_max = (y_p >= y[lo]) & (y_p >= y[hi])
-    is_min = (y_p <= y[lo]) & (y_p <= y[hi])
-
-    # Previous / next prefix extremes (use sentinels for boundary indices
-    # so the max/min interacts correctly).
-    prev_min = np.where(p > 0, prefix_min[np.maximum(p - 1, 0)], np.inf)
-    next_min = np.where(p < n - 1, suffix_min[np.minimum(p + 1, n - 1)], np.inf)
-    prev_max = np.where(p > 0, prefix_max[np.maximum(p - 1, 0)], -np.inf)
-    next_max = np.where(p < n - 1, suffix_max[np.minimum(p + 1, n - 1)], -np.inf)
-
-    ub_max = y_p - np.maximum(prev_min, next_min)
-    ub_min = np.minimum(prev_max, next_max) - y_p
-    # A point that is neither a (weak) max nor a (weak) min is monotone
-    # through p and has prominence 0 by definition; return 0 there so
-    # the bound is always non-negative.
-    ub = np.where(is_max, ub_max, np.where(is_min, ub_min, 0.0))
-    return np.maximum(ub, 0.0)
 
 # Path to the bundled matplotlib style file.
 _STYLE_FILE = Path(__file__).parent / "simplify.mplstyle"
+
+
+def _prev_next_strict(y: np.ndarray, greater: bool) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    One-pass monotonic-stack computation of previous/next strictly-greater
+    (or strictly-less) indices for every position in ``y``.
+
+    Each index is pushed and popped at most once, so the total cost is
+    amortised O(n) despite the nested ``while`` loop.  Returns two int64
+    arrays ``prev_s`` and ``next_s`` such that for every ``i``:
+
+    * ``prev_s[i]`` is the largest ``j < i`` with ``y[j] > y[i]`` (greater
+      case) or ``y[j] < y[i]`` (less case); ``-1`` if no such ``j`` exists.
+    * ``next_s[i]`` is the smallest ``j > i`` with the same condition;
+      ``n`` if no such ``j`` exists.
+    """
+    n = y.size
+    prev_s = np.empty(n, dtype=np.int64)
+    next_s = np.full(n, n, dtype=np.int64)
+    stk: list = []
+    if greater:
+        for i in range(n):
+            yi = y[i]
+            # Pop anything not strictly greater than y[i]; those are
+            # elements for which i is the next strictly-greater position.
+            while stk and y[stk[-1]] <= yi:
+                next_s[stk.pop()] = i
+            prev_s[i] = stk[-1] if stk else -1
+            stk.append(i)
+    else:
+        for i in range(n):
+            yi = y[i]
+            while stk and y[stk[-1]] >= yi:
+                next_s[stk.pop()] = i
+            prev_s[i] = stk[-1] if stk else -1
+            stk.append(i)
+    return prev_s, next_s
+
+
+def _sparse_table(y: np.ndarray, reducer) -> np.ndarray:
+    """
+    Build a sparse table for O(1) range-min or range-max queries on ``y``.
+
+    ``reducer`` is ``np.minimum`` or ``np.maximum``.  Preprocessing is
+    O(n log n) — fully vectorised numpy — and storage is (log2(n)+1, n).
+    A later query over ``[lo, hi]`` uses two overlapping blocks of
+    length 2**k, cf. Bender–Farach-Colton.
+    """
+    n = y.size
+    k_max = max(1, int(np.floor(np.log2(max(n, 1)))) + 1)
+    st = np.empty((k_max, n), dtype=y.dtype)
+    st[0] = y
+    for k in range(1, k_max):
+        step = 1 << (k - 1)
+        span = 1 << k
+        limit = n - span + 1
+        if limit <= 0:
+            st[k] = st[k - 1]
+        else:
+            st[k, :limit] = reducer(
+                st[k - 1, :limit], st[k - 1, step:step + limit]
+            )
+            st[k, limit:] = st[k - 1, limit:]
+    return st
+
+
+def _rmq(st: np.ndarray, lo: np.ndarray, hi: np.ndarray, reducer) -> np.ndarray:
+    """
+    Vectorised range-min/range-max query over inclusive intervals
+    ``[lo[i], hi[i]]`` using a precomputed sparse table ``st``.
+    """
+    length = hi - lo + 1
+    k = np.floor(np.log2(length)).astype(np.int64)
+    return reducer(st[k, lo], st[k, hi - (1 << k) + 1])
 
 
 def _peak_prominences(y: np.ndarray, idx: np.ndarray) -> np.ndarray:
@@ -86,6 +115,13 @@ def _peak_prominences(y: np.ndarray, idx: np.ndarray) -> np.ndarray:
     small prominence.  The measure is *not* affected by a feature's
     width — only its amplitude relative to surrounding terrain.
 
+    Complexity
+    ----------
+    O(n log n) total, fully deterministic: two monotonic-stack passes
+    of length ``n`` produce the prev/next strictly-greater and
+    strictly-less indices, two sparse tables give O(1) range-min /
+    range-max queries, and all per-candidate work is vectorised.
+
     Parameters
     ----------
     y : np.ndarray
@@ -99,45 +135,81 @@ def _peak_prominences(y: np.ndarray, idx: np.ndarray) -> np.ndarray:
         Non-negative prominence value for each index in ``idx``.
     """
     n = y.size
-    proms = np.empty(idx.size, dtype=float)
-    for k, p in enumerate(idx):
-        yp = y[p]
-        # Classify: local max if higher than both immediate neighbours.
-        lo = max(p - 1, 0)
-        hi = min(p + 1, n - 1)
-        is_max = yp >= y[lo] and yp >= y[hi]
+    proms = np.zeros(idx.size, dtype=float)
+    if idx.size == 0 or n == 0:
+        return proms
 
-        if is_max:
-            # Walk outward until we find a point taller than yp; track
-            # the lowest value encountered on each side.
-            left_min = yp
-            i = p - 1
-            while i >= 0 and y[i] <= yp:
-                if y[i] < left_min:
-                    left_min = y[i]
-                i -= 1
-            right_min = yp
-            i = p + 1
-            while i < n and y[i] <= yp:
-                if y[i] < right_min:
-                    right_min = y[i]
-                i += 1
-            proms[k] = yp - max(left_min, right_min)
-        else:
-            # Local min: symmetric with max and min swapped.
-            left_max = yp
-            i = p - 1
-            while i >= 0 and y[i] >= yp:
-                if y[i] > left_max:
-                    left_max = y[i]
-                i -= 1
-            right_max = yp
-            i = p + 1
-            while i < n and y[i] >= yp:
-                if y[i] > right_max:
-                    right_max = y[i]
-                i += 1
-            proms[k] = min(left_max, right_max) - yp
+    p = np.asarray(idx, dtype=np.int64)
+    y_p = y[p]
+
+    # Classify each candidate as (weak) max / min from immediate neighbours.
+    lo_nb = np.maximum(p - 1, 0)
+    hi_nb = np.minimum(p + 1, n - 1)
+    is_max = (y_p >= y[lo_nb]) & (y_p >= y[hi_nb])
+    is_min = (y_p <= y[lo_nb]) & (y_p <= y[hi_nb]) & ~is_max
+
+    # MAX candidates: walk outward until a point with y > y[p]; track
+    # the minimum of y on each side using a min-RMQ.
+    if np.any(is_max):
+        PG, NG = _prev_next_strict(y, greater=True)
+        st_min = _sparse_table(y, np.minimum)
+        pm = p[is_max]
+        pg = PG[pm]
+        ng = NG[pm]
+        # Inclusive walk ranges: left = [pg+1, pm-1], right = [pm+1, ng-1].
+        # Boundaries: pg = -1 gives lo=0; ng = n gives hi=n-1.
+        left_lo = pg + 1
+        left_hi = pm - 1
+        right_lo = pm + 1
+        right_hi = ng - 1
+        left_valid = left_lo <= left_hi
+        right_valid = right_lo <= right_hi
+        left_min = np.full(pm.size, np.inf)
+        right_min = np.full(pm.size, np.inf)
+        if np.any(left_valid):
+            left_min[left_valid] = _rmq(
+                st_min, left_lo[left_valid], left_hi[left_valid], np.minimum
+            )
+        if np.any(right_valid):
+            right_min[right_valid] = _rmq(
+                st_min, right_lo[right_valid], right_hi[right_valid], np.minimum
+            )
+        # Walks always include at least one neighbour for a true extremum,
+        # so at least one side is valid.  Use the valid sides; if a side
+        # is empty (shouldn't happen for real extrema) treat its shoulder
+        # as +inf so the other side dominates.
+        shoulder = np.maximum(left_min, right_min)
+        proms[is_max] = y[pm] - shoulder
+
+    # MIN candidates: mirror image using max-RMQ.
+    if np.any(is_min):
+        PL, NL = _prev_next_strict(y, greater=False)
+        st_max = _sparse_table(y, np.maximum)
+        pn = p[is_min]
+        pl = PL[pn]
+        nl = NL[pn]
+        left_lo = pl + 1
+        left_hi = pn - 1
+        right_lo = pn + 1
+        right_hi = nl - 1
+        left_valid = left_lo <= left_hi
+        right_valid = right_lo <= right_hi
+        left_max = np.full(pn.size, -np.inf)
+        right_max = np.full(pn.size, -np.inf)
+        if np.any(left_valid):
+            left_max[left_valid] = _rmq(
+                st_max, left_lo[left_valid], left_hi[left_valid], np.maximum
+            )
+        if np.any(right_valid):
+            right_max[right_valid] = _rmq(
+                st_max, right_lo[right_valid], right_hi[right_valid], np.maximum
+            )
+        shoulder = np.minimum(left_max, right_max)
+        proms[is_min] = shoulder - y[pn]
+
+    # Clamp tiny negative values from floating-point rounding (prominence
+    # is non-negative by definition).
+    np.clip(proms, 0.0, None, out=proms)
     return proms
 
 
@@ -158,8 +230,11 @@ def _simplify(
 
     Algorithm overview
     ------------------
-    Three independent strategies select "important" indices, which are then
-    merged together with the two endpoints:
+    Three independent strategies select "important" indices, which are
+    merged together with the two endpoints into a pool of feature points.
+    A prominence-based filter then marks a subset as mandatory, and a
+    final R²-based thinning step chooses the smallest subset that meets
+    the requested quality target.
 
     1. **Menger curvature detection** (exact discrete curvature)
        Computes the Menger curvature κ for each triplet of consecutive
@@ -178,6 +253,22 @@ def _simplify(
        and sparse sampling where ``y`` is nearly flat — adapting
        automatically to the curve shape.
 
+    4. **Topological-persistence filter** (mandatory set)
+       ``_peak_prominences`` computes the prominence of every local
+       extremum (the minimum descent required to reach a strictly
+       higher point).  Extrema whose prominence exceeds 5 % of the
+       y-range are flagged as *mandatory* — they are always retained
+       regardless of the R² budget, so a deep dip or tall spike never
+       flickers in and out across neighbouring point counts.
+
+    5. **R²-based thinning** (optional, ``r2_target``)
+       The remaining feature points are traversed in hierarchical-
+       bisection order (endpoints → midpoint → quartiles → …) so that
+       the subset at budget N is always a superset of the subset at
+       N-1.  A binary search plus a stability check picks the smallest
+       ``k`` for which the trial  ``mandatory ∪ bisection[:k]``
+       achieves ``R² ≥ r2_target``.
+
     For a perfectly flat curve (zero total variation), the algorithm falls
     back to uniformly spaced indices.
 
@@ -190,10 +281,10 @@ def _simplify(
         Dependent variable (e.g., temperature, density, flux).
         Must be the same length as ``x_arr``.
     nmin : int, optional
-        Target *minimum* number of output samples.  The actual number of
-        returned points may be larger if extra feature points are found by
-        the gradient and sign-change detectors.  Clamped to >= 100.
-        Default is 100.
+        Target *minimum* number of output samples.  Acts as the number of
+        bins for the cumulative-distance sampler; the final count may
+        differ after curvature/sign-change/prominence merging and the
+        R² thinning step.  Clamped to >= 100.  Default is 100.
     grad_inc : float, optional
         Menger curvature threshold.  A point is flagged as "important"
         when the Menger curvature of its triplet exceeds this value.
@@ -342,37 +433,25 @@ def _simplify(
     # Topological persistence: identify the extrema that are large
     # enough to be genuine features of the curve (as opposed to
     # noise-level perturbations), and mark them as MANDATORY — they
-    # are always included in every trial subset, so once a big dip or
-    # spike is in the output at budget N it is also in the output at
-    # N+1, N+2, …  This prevents the "dip flickers in at some random
-    # n" artefact.
+    # are always included in every trial subset, so once a big dip
+    # or spike is in the output at budget N it is also in the output
+    # at N+1, N+2, …  This prevents the "dip flickers in at some
+    # random n" artefact.
     #
-    # Two-stage filter to keep compute cheap on noisy curves:
-    #   (1) Vectorised rolling-amplitude test (O(n·W) numpy ops) to
-    #       discard extrema whose entire local neighbourhood is
-    #       flatter than the prominence threshold.  Walks of any
-    #       persistent feature are bounded above by this window
-    #       amplitude, so failing this test proves non-significance.
-    #   (2) Exact peak prominence only on the surviving candidates.
-    # For a curve with thousands of noise-level sign changes, this
-    # collapses the candidate set to a handful, turning the 150 ms
-    # Python loop into a <5 ms call.
+    # _peak_prominences is O(n log n), so running it directly on
+    # every sign-change index is cheap even for noisy curves with
+    # thousands of extrema.
     # ---------------------------------------------------------------
     y_range = float(np.nanmax(y) - np.nanmin(y))
     prom_thresh_frac = 0.05               # 5 % of total y-range
     prom_thresh = prom_thresh_frac * y_range
-    if important_sign.size > 0 and y_range > 0:
-        # Stage 1: O(n) vectorised upper bound on prominence, derived
-        # from prefix/suffix min/max of y.  Extrema failing this test
-        # provably have prominence < threshold and are skipped.
-        ub = _prominence_upper_bound(y, important_sign)
-        candidates = important_sign[ub >= prom_thresh]
-        if candidates.size > 0:
-            # Stage 2: exact prominence on the small surviving set.
-            proms = _peak_prominences(y, candidates)
-            prominent_idx = candidates[proms >= prom_thresh]
-        else:
-            prominent_idx = np.array([], dtype=int)
+    # Prominence is only consumed by the R² thinning step; skip it when
+    # the caller has disabled thinning (``r2_target=None``) to save the
+    # O(n log n) sparse-table build on large inputs.
+    if (r2_target is not None and r2_target < 1.0
+            and important_sign.size > 0 and y_range > 0):
+        proms = _peak_prominences(y, important_sign)
+        prominent_idx = important_sign[proms >= prom_thresh]
     else:
         prominent_idx = np.array([], dtype=int)
 
@@ -716,14 +795,19 @@ def _simplify_animate(
     """
     Create an animated GIF showing progressive curve simplification.
 
-    The animation sweeps through decreasing numbers of retained points,
-    from the full original down past the optimal simplification and into
-    aggressive over-simplification.  Two panels are shown:
+    The animation builds the simplified curve up from 5 points to the
+    full feature-detected set, using the same mandatory / hierarchical-
+    bisection ordering as :func:`_simplify` so that frames are strictly
+    nested (each frame is a superset of the previous one).  Two panels
+    are shown:
 
-    - **Top panel**: the underlying curve as a thin line, with the current
-      simplified points overlaid as small dots.
-    - **Bottom panel**: RMSE vs. number of retained points, building up
-      as the animation progresses (log-log scale).
+    - **Top panel**: the underlying curve as a thin grey line, with the
+      current simplified points overlaid as red dots + line.
+    - **Bottom panel**: log-log RMSE vs. number of retained points,
+      with dashed reference hlines at the RMSE corresponding to
+      R² = 0.9, 0.99, 0.999 (equally spaced half-decade rungs), and a
+      persistent vertical line at the ``n`` where ``r2_target`` is
+      first reached.
 
     Parameters
     ----------
@@ -739,8 +823,13 @@ def _simplify_animate(
     title : str, optional
         Figure title.  Default: ``"Curve simplification"``.
     n_steps : int, optional
-        Number of distinct simplification levels to sweep through.
+        Number of distinct simplification levels to sweep through,
+        log-spaced from 5 up to the total number of feature points.
         Default: 30.
+    r2_target : float, optional
+        Quality target used to mark the vertical "R² reached" line in
+        the bottom panel.  Does not affect which frames are rendered.
+        Default: 0.9.
 
     Examples
     --------
@@ -778,19 +867,14 @@ def _simplify_animate(
     full_idx = np.sort(np.searchsorted(x_o, x_full))
 
     # Identify topologically persistent extrema (mandatory set) using
-    # the same two-stage filter as _simplify.
+    # the same prominence-threshold rule as _simplify.
     grad_o = np.gradient(y_o)
     sign_idx = np.where(np.diff(np.sign(grad_o)) != 0)[0]
     y_rng = float(np.nanmax(y_o) - np.nanmin(y_o))
     prom_thresh = 0.05 * y_rng
     if sign_idx.size > 0 and y_rng > 0:
-        ub = _prominence_upper_bound(y_o, sign_idx)
-        cand = sign_idx[ub >= prom_thresh]
-        if cand.size > 0:
-            proms = _peak_prominences(y_o, cand)
-            prominent_idx = cand[proms >= prom_thresh]
-        else:
-            prominent_idx = np.array([], dtype=int)
+        proms = _peak_prominences(y_o, sign_idx)
+        prominent_idx = sign_idx[proms >= prom_thresh]
     else:
         prominent_idx = np.array([], dtype=int)
 
@@ -888,17 +972,38 @@ def _simplify_animate(
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", alpha=0.9),
     )
 
-    # --- Error subplot: RMSE vs n_points (log x) ---
-    rms_nonzero = all_rms[all_rms > 0]
-    if rms_nonzero.size > 0:
-        rms_hi = all_rms.max() * 1.1
-    else:
-        rms_hi = 1.0
+    # --- Error subplot: log-RMSE vs n_points (log-log) ---
+    # RMSE = sigma_y * sqrt(1 - R^2) where sigma_y is the population
+    # standard deviation of y_o, so fixed R^2 thresholds map to fixed
+    # RMSE levels on the log y-axis — equally spaced half-decade
+    # reference lines at R^2 = 0.9, 0.99, 0.999 form a visual ladder
+    # showing how close the simplification is to perfect reconstruction.
+    sigma_y = float(np.sqrt(np.mean((y_o - np.mean(y_o)) ** 2)))
+    r2_levels = (0.9, 0.99, 0.999)
+    rms_levels = [sigma_y * np.sqrt(1.0 - r) for r in r2_levels]
+
+    rms_positive = all_rms[all_rms > 0]
+    rms_floor = (min(rms_positive.min(), min(rms_levels)) * 0.5
+                 if rms_positive.size > 0 else min(rms_levels) * 0.5)
+    rms_ceil = (max(all_rms.max(), max(rms_levels)) * 2.0
+                if rms_positive.size > 0 else max(rms_levels) * 2.0)
     ax_err.set_xlim(max(all_npts.min() * 0.7, 1), all_npts.max() * 1.3)
-    ax_err.set_ylim(0, rms_hi)
+    ax_err.set_ylim(rms_floor, rms_ceil)
     ax_err.set_xscale("log")
+    ax_err.set_yscale("log")
     ax_err.set_xlabel(r"Number of points $n$")
     ax_err.set_ylabel(r"RMSE")
+
+    # Reference hlines at R^2 = 0.9 / 0.99 / 0.999.
+    for r2_lvl, rms_lvl in zip(r2_levels, rms_levels):
+        ax_err.axhline(rms_lvl, color="0.6", ls=":", lw=0.8, zorder=0)
+        ax_err.text(
+            all_npts.max() * 1.25, rms_lvl,
+            rf"$R^2={r2_lvl:g}$",
+            va="center", ha="right", fontsize=8, color="0.4",
+            bbox=dict(boxstyle="round,pad=0.15", fc="white", ec="none",
+                      alpha=0.8),
+        )
 
     # --- Find the step where R² target is first reached ---
     all_r2 = np.array([s["r2"] for s in steps])
@@ -988,7 +1093,7 @@ def _random_test_curve(
       curve.  These are "redundant" regions where cumulative-distance
       sampling should thin aggressively.
     - **Sharp spikes** – 2–5 narrow Gaussian pulses of random height.
-      Their steep flanks trigger gradient-change detection.
+      Their steep flanks trigger the Menger-curvature detector.
     - **Step discontinuities** – 1–3 Heaviside-like jumps (smoothed over
       a handful of points) that create abrupt level shifts.
     - **Gaussian noise** – low-amplitude noise added everywhere, so the
@@ -1032,7 +1137,7 @@ def _random_test_curve(
     # ------------------------------------------------------------------
     # 2. Flat plateaus (redundant regions)
     #    Use a smooth blend so the entry/exit don't create artificial
-    #    discontinuities that swamp the gradient detector.
+    #    discontinuities that swamp the curvature detector.
     # ------------------------------------------------------------------
     n_plateaus = rng.integers(1, 4)                    # 1–3 plateaus
     for _ in range(n_plateaus):
@@ -1047,7 +1152,7 @@ def _random_test_curve(
         y = y * (1.0 - window) + level * window
 
     # ------------------------------------------------------------------
-    # 3. Sharp spikes (gradient-change detection)
+    # 3. Sharp spikes (Menger-curvature detection)
     # ------------------------------------------------------------------
     n_spikes = rng.integers(2, 6)                      # 2–5 spikes
     for _ in range(n_spikes):
@@ -1059,7 +1164,7 @@ def _random_test_curve(
     # ------------------------------------------------------------------
     # 4. Step discontinuities (sharp level shifts)
     #    Steepness is set so the transition spans ~20 grid points —
-    #    sharp enough to trigger gradient detection but not so steep
+    #    sharp enough to trigger the curvature detector but not so steep
     #    that hundreds of transition points are all flagged.
     # ------------------------------------------------------------------
     n_steps = rng.integers(1, 4)                       # 1–3 steps
@@ -1073,7 +1178,7 @@ def _random_test_curve(
 
     # ------------------------------------------------------------------
     # 5. Tiny Gaussian noise — just enough to be realistic, not enough
-    #    to trigger gradient-change detection on smooth stretches.
+    #    to trigger the curvature detector on smooth stretches.
     # ------------------------------------------------------------------
     noise_amp = 0.001 * (np.max(y) - np.min(y) + 1e-30)
     y += rng.normal(0.0, noise_amp, size=npts)
@@ -1112,7 +1217,7 @@ def _simplify_cli():
     --nmin : int
         Minimum number of output samples (default: 100).
     --grad-inc : float
-        Fractional gradient-change threshold (default: 1.0).
+        Menger curvature threshold (default: 1.0, units: 1/length).
     --metrics : flag
         Print error metrics (RMSE, MAE, R², etc.) after simplification.
     --plot : flag
@@ -1138,12 +1243,14 @@ def _simplify_cli():
         epilog=(
             "Example:\n"
             "  python simplify.py data.csv -o reduced.csv --nmin 200\n\n"
-            "The algorithm combines three strategies:\n"
-            "  1. Gradient-change detection  -- keeps sharp bends\n"
-            "  2. Sign-change detection      -- keeps local extrema\n"
+            "The algorithm combines five stages:\n"
+            "  1. Menger-curvature detection  -- keeps sharp bends\n"
+            "  2. Sign-change detection       -- keeps local extrema\n"
             "  3. Cumulative-distance sampling -- uniform arc-length in y\n"
-            "All selected indices are merged with the endpoints to produce\n"
-            "a compact, faithful representation of the original curve."
+            "  4. Topological-persistence filter -- marks prominent extrema\n"
+            "     as mandatory so big features never flicker in and out\n"
+            "  5. R²-based thinning -- hierarchical bisection + binary\n"
+            "     search picks the smallest subset meeting --r2-target"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1169,7 +1276,7 @@ def _simplify_cli():
         "--grad-inc",
         type=float,
         default=1.0,
-        help="Fractional gradient-change threshold (default: 1.0).",
+        help="Menger curvature threshold (default: 1.0, units: 1/length).",
     )
     parser.add_argument(
         "--metrics",
@@ -1212,8 +1319,8 @@ def _simplify_cli():
         "--r2-target",
         type=float,
         default=0.9,
-        help="Target R² quality (default: 0.9).  Points are thinned until "
-             "R² drops to this value.  Use None to disable.",
+        help="Target R² quality (default: 0.9).  Points are added until "
+             "R² reaches this value.  Use None to keep all detected points.",
     )
     parser.add_argument(
         "--random",
