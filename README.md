@@ -12,7 +12,10 @@ python simplify.py --random --seed 42 --animate demo.gif --animate-duration 5
 ```
 
 It progressively adds points to a 10 000-point noisy test curve and
-stops once R² ≥ 0.9 (green dashed line, here at n = 62).
+stops once R² ≥ 0.9 (green dashed line, here at n = 36). The bottom
+panel shows RMSE on a log-log scale with dashed reference lines at
+R² = 0.9, 0.99, 0.999 so the remaining distance to a perfect fit is
+visible at a glance.
 
 ## Quick start
 
@@ -70,13 +73,15 @@ _simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 
 ## Algorithm
 
-Three independent strategies select important indices, which are merged
-via boolean mask and then thinned to a target R²:
+Three independent feature detectors populate a candidate pool, a
+topological-persistence filter promotes the visually important extrema
+to a mandatory set, and an R²-driven binary search picks the smallest
+subset that meets the quality target:
 
 1. **Menger curvature detection** — computes the discrete curvature
-   (reciprocal of circumradius) for each triplet of consecutive points.
-   Keeps points where curvature exceeds `grad_inc`. Captures shocks,
-   discontinuities, and phase transitions.
+   (reciprocal of circumradius) for each triplet of consecutive
+   points. Keeps points where curvature exceeds `grad_inc`. Captures
+   shocks, discontinuities, and phase transitions.
 
 2. **Sign-change detection** — keeps every point where the first
    derivative changes sign, i.e., every local minimum and maximum.
@@ -85,9 +90,20 @@ via boolean mask and then thinned to a target R²:
    (`sum(|diff(y)|)`) into `nmin` equal bins and selects one point at
    each bin boundary. Dense where y changes rapidly, sparse where flat.
 
-4. **R²-based thinning** — starting from 5 points, binary-searches for
-   the minimum subset of detected points that achieves the target R²
-   (default 0.9).
+4. **Topological persistence (mandatory set)** — for each extremum,
+   `_peak_prominences` computes the peak prominence (minimum descent
+   from a local max, or ascent from a local min, needed to reach a
+   strictly more extreme point). Extrema with prominence ≥ 5 % of the
+   y-range are marked **mandatory** and included in every trial subset,
+   so big features never flicker in and out with changing `n`. The
+   computation is O(n log n) via monotonic-stack prev/next-greater
+   indices plus a sparse-table range-min query.
+
+5. **R²-based thinning** — the remaining candidates are traversed in
+   hierarchical bisection order (endpoints → midpoint → quartiles → …)
+   so trial subsets are strictly nested. A binary search plus a
+   3-in-a-row stability check picks the smallest `k` for which
+   `mandatory ∪ bisection[:k]` reaches `r2_target`.
 
 ## Parameters
 
