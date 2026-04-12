@@ -257,30 +257,76 @@ def _simplify(
     merged = np.where(mask)[0]
 
     # =================================================================
-    # R²-based build-up: start from 5 points and increase until R² target
+    # R²-based build-up: start from 5 points and increase until R² target.
+    # Uses hierarchical bisection of the merged index array so that the
+    # subset at budget N is always a superset of the subset at N-1.
+    # This prevents turning points from randomly appearing/disappearing
+    # at intermediate point counts.
     # =================================================================
     if r2_target is not None and r2_target < 1.0 and len(merged) > 5:
         ss_tot = np.sum((y - np.mean(y)) ** 2)
         if ss_tot > 0:
-            # Binary search: find minimum points (starting from 5) that
-            # achieve the target R².
-            lo, hi = 5, len(merged)
+            # Build a hierarchical bisection ordering of merged indices.
+            # Level 0: endpoints (first and last of merged).
+            # Level 1: midpoint of merged.
+            # Level 2: quartile points.
+            # Level k: 2^(k-1) new points at each level.
+            # Taking the first N from this ordering always includes the
+            # first N-1, and spreads points evenly across the x-range.
+            n_m = len(merged)
+            order = np.empty(n_m, dtype=int)
+            order[0] = 0
+            order[1] = n_m - 1
+            count = 2
+
+            # BFS-style bisection: queue of (lo, hi) intervals to split.
+            queue = [(0, n_m - 1)]
+            while queue:
+                next_queue = []
+                for lo_q, hi_q in queue:
+                    if hi_q - lo_q <= 1:
+                        continue
+                    mid_q = (lo_q + hi_q) // 2
+                    order[count] = mid_q
+                    count += 1
+                    next_queue.append((lo_q, mid_q))
+                    next_queue.append((mid_q, hi_q))
+                queue = next_queue
+
+            # order[:count] maps position-in-merged to bisection priority.
+            # Convert to actual data indices via merged[order].
+            prioritised = merged[order[:count]]
+
+            # Helper: compute R² for the first n points of prioritised.
+            def _r2_at(n):
+                trial = np.sort(prioritised[:n])
+                y_interp = np.interp(x, x[trial], y[trial])
+                return 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
+
+            # Binary search: find minimum count from prioritised pool.
+            lo, hi = 5, len(prioritised)
             while lo < hi:
                 mid = (lo + hi) // 2
-                sub = np.unique(
-                    np.linspace(0, len(merged) - 1, mid).astype(int)
-                )
-                trial = merged[sub]
-                y_interp = np.interp(x, x[trial], y[trial])
-                r2 = 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
-                if r2 >= r2_target:
+                if _r2_at(mid) >= r2_target:
                     hi = mid
                 else:
                     lo = mid + 1
-            sub = np.unique(
-                np.linspace(0, len(merged) - 1, lo).astype(int)
-            )
-            merged = merged[sub]
+
+            # Stability check: scan forward from lo until R² >= target
+            # for 3 consecutive values, guarding against local dips
+            # caused by noisy points.
+            stable_run = 0
+            n = lo
+            while n <= len(prioritised):
+                if _r2_at(n) >= r2_target:
+                    stable_run += 1
+                    if stable_run >= 3:
+                        break
+                else:
+                    stable_run = 0
+                n += 1
+
+            merged = np.sort(prioritised[:n])
 
     return x[merged], y[merged]
 
