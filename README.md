@@ -3,6 +3,17 @@
 Heuristic downsampling of 1-D curves while preserving sharp bends, local
 extrema, and overall shape. Single file, no dependencies beyond NumPy.
 
+![Simplification demo](demo.gif)
+
+The animation above was produced with:
+
+```bash
+python simplify.py --random --seed 42 --animate demo.gif --animate-duration 5
+```
+
+It progressively adds points to a 10 000-point noisy test curve and
+stops once R² ≥ 0.9 (green dashed line, here at n = 62).
+
 ## Quick start
 
 ```bash
