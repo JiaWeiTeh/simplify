@@ -213,6 +213,67 @@ def _peak_prominences(y: np.ndarray, idx: np.ndarray) -> np.ndarray:
     return proms
 
 
+def _prune_collinear(
+    idx: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+    tol: float,
+    protected: np.ndarray,
+) -> np.ndarray:
+    """
+    Drop interior indices whose y value lies within ``tol`` of the line
+    between their two surviving neighbours.
+
+    Used as a post-processing step after the feature pool and R² thinning
+    have chosen a candidate subset: any point that interpolates to itself
+    from its neighbours carries no new information and is safe to remove.
+    This is the primary reason horizontal / linear stretches stop being
+    over-populated by the bisection sampler, which otherwise places
+    points along the x-axis without knowing that intermediate samples on
+    a straight segment are redundant.
+
+    The first and last elements of ``idx`` are always kept, as are any
+    entries in ``protected`` (the "mandatory" prominent extrema).  The
+    pass is iterated — every sweep skips the neighbour of a just-removed
+    point to avoid cascading wrong removals in a single pass — until no
+    further removals are possible, which terminates in a small number of
+    sweeps since each sweep at least halves the removable candidates.
+    """
+    if idx.size <= 2 or tol <= 0:
+        return idx
+    protected_set = set(int(p) for p in protected.tolist())
+    alive = np.ones(idx.size, dtype=bool)
+    while True:
+        removed = False
+        active = np.flatnonzero(alive)
+        if active.size <= 2:
+            break
+        j = 1
+        while j < active.size - 1:
+            pos = active[j]
+            ii = int(idx[pos])
+            # Never drop endpoints or mandatory points.
+            if pos == 0 or pos == idx.size - 1 or ii in protected_set:
+                j += 1
+                continue
+            ip = int(idx[active[j - 1]])
+            in_ = int(idx[active[j + 1]])
+            dx = x[in_] - x[ip]
+            if dx == 0:
+                j += 1
+                continue
+            y_interp = y[ip] + (y[in_] - y[ip]) * (x[ii] - x[ip]) / dx
+            if abs(y[ii] - y_interp) <= tol:
+                alive[pos] = False
+                removed = True
+                j += 2   # skip next — its "previous" neighbour just changed
+            else:
+                j += 1
+        if not removed:
+            break
+    return idx[alive]
+
+
 def _simplify(
     x_arr: Union[np.ndarray, Sequence[float]],
     y_arr: Union[np.ndarray, Sequence[float]],
@@ -286,12 +347,16 @@ def _simplify(
         differ after curvature/sign-change/prominence merging and the
         R² thinning step.  Clamped to >= 100.  Default is 100.
     grad_inc : float, optional
-        Menger curvature threshold.  A point is flagged as "important"
-        when the Menger curvature of its triplet exceeds this value.
-        Units are 1/length in the (x, y) plane, so the appropriate
-        value depends on the scale of the data.  Lower values keep more
-        points (more sensitive to bends); higher values keep fewer.
-        Default is 1.0.
+        Bend-sensitivity threshold, applied in NORMALISED ``(x, y)``
+        coordinates so it is scale-invariant — the same value works
+        equally well for near-vertical drops and for gentle arbitrary
+        slopes regardless of the axes' units.  A point is flagged as
+        "important" when either its Menger curvature exceeds
+        ``grad_inc`` (captures tight corners) or the turning angle
+        between its adjacent segments exceeds ``0.1 * grad_inc``
+        radians (captures wide, shallow bends that a pure curvature
+        test would miss).  Lower values keep more points (more
+        sensitive to bends); higher values keep fewer.  Default is 1.0.
     r2_target : float, optional
         Target R² (coefficient of determination).  After the feature
         detection selects important points, the result is thinned to the
@@ -396,16 +461,25 @@ def _simplify(
     nmin = max(int(nmin), 100)
 
     # =====================================================================
-    # Strategy 1: Menger curvature feature detection
+    # Strategy 1: Scale-invariant bend detection
     # =====================================================================
-    # Compute Menger curvature for each interior triplet of consecutive
-    # points.  The Menger curvature κ_i is the reciprocal of the
-    # circumradius of (P_{i-1}, P_i, P_{i+1}).  High curvature marks
-    # sharp bends — shocks, discontinuities, phase transitions.
-    dx1 = np.diff(x[:-1])                          # x[i] - x[i-1]
-    dy1 = np.diff(y[:-1])                          # y[i] - y[i-1]
-    dx2 = np.diff(x[1:])                           # x[i+1] - x[i]
-    dy2 = np.diff(y[1:])                           # y[i+1] - y[i]
+    # Both detectors below run in NORMALISED coordinates (x, y scaled to
+    # [0, 1]) so the thresholds are dimensionless and respond to the
+    # *shape* of the curve, not the units of the axes.  In the raw-coord
+    # formulation the Menger curvature threshold only fired for tiny
+    # triangles (e.g. near-vertical drops), missing gentle bends where
+    # the triplet is large even though the turn angle is significant.
+    x_range = float(np.nanmax(x) - np.nanmin(x))
+    y_range = float(np.nanmax(y) - np.nanmin(y))
+    x_scale = x_range if x_range > 0 else 1.0
+    y_scale = y_range if y_range > 0 else 1.0
+    x_n = (x - np.nanmin(x)) / x_scale
+    y_n = (y - np.nanmin(y)) / y_scale
+
+    dx1 = np.diff(x_n[:-1])                        # x[i] - x[i-1]
+    dy1 = np.diff(y_n[:-1])                        # y[i] - y[i-1]
+    dx2 = np.diff(x_n[1:])                         # x[i+1] - x[i]
+    dy2 = np.diff(y_n[1:])                         # y[i+1] - y[i]
 
     # 2× signed area of the triangle formed by the triplet.
     cross = dx1 * (dy1 + dy2) - dy1 * (dx1 + dx2)
@@ -420,40 +494,61 @@ def _simplify(
 
     kappa = 2.0 * np.abs(cross) / denom            # Menger curvature, len n-2
 
-    # Keep interior indices where curvature exceeds the threshold.
-    # kappa[i] corresponds to original index i+1.
-    important_curv = np.where(kappa > grad_inc)[0] + 1
+    # Turning-angle detector: the change in direction between the
+    # incoming and outgoing segments, in radians.  Unlike Menger
+    # curvature — which divides by segment lengths and therefore
+    # favours small-scale bends — the turning angle is purely
+    # geometric and fires equally for sharp vertical kinks and gentle
+    # wide-arc bends with the same angle.  This catches arbitrary
+    # slope changes that the curvature detector alone would miss.
+    seg_cross = dx1 * dy2 - dy1 * dx2
+    seg_dot = dx1 * dx2 + dy1 * dy2
+    turning_angle = np.abs(np.arctan2(seg_cross, seg_dot))  # [0, π]
+
+    # A 1-radian ≈ 57° turn is equivalent to the "sharp bend" semantic
+    # of the default grad_inc=1.  Dividing by ~10 keeps the angle
+    # detector noticeably more sensitive for gentle bends while the
+    # curvature detector still picks up tight corners.
+    angle_thresh = min(0.1 * grad_inc, np.pi)
+    important_curv = np.where(
+        (kappa > grad_inc) | (turning_angle > angle_thresh)
+    )[0] + 1
 
     # Keep indices where the derivative changes sign (local extrema).
     grad = np.gradient(y)
     # np.sign(grad) is -1, 0, or +1; a nonzero diff marks a sign flip.
-    important_sign = np.where(np.diff(np.sign(grad)) != 0)[0]
+    important_sign_all = np.where(np.diff(np.sign(grad)) != 0)[0]
 
     # ---------------------------------------------------------------
     # Topological persistence: identify the extrema that are large
     # enough to be genuine features of the curve (as opposed to
-    # noise-level perturbations), and mark them as MANDATORY — they
-    # are always included in every trial subset, so once a big dip
-    # or spike is in the output at budget N it is also in the output
-    # at N+1, N+2, …  This prevents the "dip flickers in at some
-    # random n" artefact.
+    # noise-level perturbations).  Two thresholds are used:
+    #
+    # * ``prom_thresh`` (5 % of y-range) marks MANDATORY extrema —
+    #   always included in every trial subset, so once a big dip or
+    #   spike is in the output at budget N it is also in the output
+    #   at N+1, N+2, …  This prevents the "dip flickers in at some
+    #   random n" artefact.
+    # * ``noise_thresh`` (0.5 % of y-range) suppresses sub-noise
+    #   sign flips on near-flat stretches, which would otherwise
+    #   flood the merged pool with spurious extrema and cause the
+    #   R²-bisection step to over-populate horizontal regions.
     #
     # _peak_prominences is O(n log n), so running it directly on
     # every sign-change index is cheap even for noisy curves with
     # thousands of extrema.
     # ---------------------------------------------------------------
-    y_range = float(np.nanmax(y) - np.nanmin(y))
     prom_thresh_frac = 0.05               # 5 % of total y-range
     prom_thresh = prom_thresh_frac * y_range
-    # Prominence is only consumed by the R² thinning step; skip it when
-    # the caller has disabled thinning (``r2_target=None``) to save the
-    # O(n log n) sparse-table build on large inputs.
-    if (r2_target is not None and r2_target < 1.0
-            and important_sign.size > 0 and y_range > 0):
-        proms = _peak_prominences(y, important_sign)
-        prominent_idx = important_sign[proms >= prom_thresh]
-    else:
-        prominent_idx = np.array([], dtype=int)
+    noise_thresh = 0.005 * y_range        # 0.5 % noise floor
+    prominent_idx = np.array([], dtype=int)
+    important_sign = important_sign_all
+    if important_sign_all.size > 0 and y_range > 0:
+        proms_all = _peak_prominences(y, important_sign_all)
+        # Drop sub-noise extrema from the pool entirely.
+        important_sign = important_sign_all[proms_all >= noise_thresh]
+        if r2_target is not None and r2_target < 1.0:
+            prominent_idx = important_sign_all[proms_all >= prom_thresh]
 
     # =====================================================================
     # Strategy 2: Cumulative-distance sampling in y
@@ -581,6 +676,21 @@ def _simplify(
                 k += 1
 
             merged = np.sort(np.concatenate([mandatory, optional[:k]]))
+
+    # =====================================================================
+    # Collinearity prune: drop redundant points on linear / horizontal
+    # segments.  The R² bisection above spreads its budget uniformly
+    # across the merged array in x-order and can leave behind samples
+    # that lie exactly on the line between their neighbours — a common
+    # outcome when the feature set straddles long flat stretches or
+    # shallow ramps.  The tolerance is a small fraction of the y-range
+    # so only points that interpolate to within ~0.1 % of themselves
+    # are dropped; mandatory (prominent) extrema and endpoints are
+    # never removed.
+    if merged.size > 2 and y_range > 0:
+        prune_tol = 1e-3 * y_range
+        protected = prominent_idx if prominent_idx.size else np.array([], dtype=int)
+        merged = _prune_collinear(merged, x, y, prune_tol, protected)
 
     return x[merged], y[merged]
 
