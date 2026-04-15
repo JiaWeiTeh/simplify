@@ -142,6 +142,33 @@ removes points that lie on the line between their neighbours:
 | `nmin` | 100 | Target minimum output samples for distance sampling |
 | `grad_inc` | 1.0 | Bend sensitivity (dimensionless, scale-invariant); fires when Menger curvature in normalised coords > `grad_inc`, or turning angle > `0.1 * grad_inc` rad |
 | `r2_target` | 0.9 | Target R²; set to `None` to keep all detected points |
+| `log_y` | `"auto"` | Work in log-y space for every internal feature detector and the R² thinning step.  `"auto"` activates when every `y > 0` and `max(y)/min(y) > 100`; pass `True` / `False` to force. |
+
+## Multi-decade data (density, temperature, flux profiles)
+
+Astrophysical profiles that span several orders of magnitude — e.g.
+density or temperature inside an interstellar bubble, where ISM
+(~1 cm⁻³) to shocked shell (~10⁶ cm⁻³) is routine — need log-y
+handling, because linear R² and the linear cumulative-distance sampler
+are both dominated by the peak amplitude.  `log_y="auto"` (the
+default) switches every internal detector onto `log10(y)` when the
+input is strictly positive and spans ≥ 2 decades; the output arrays
+still contain the caller's raw `y` values.
+
+On a synthetic bubble profile with a 4.5 × 10⁶ dynamic range and the
+default `r2_target=0.99`:
+
+| mode | n kept | linear R² | log R² | worst-case log deviation |
+|------|-------:|----------:|-------:|-------------------------:|
+| `log_y=False` (classic) | 13 | 0.991 | 0.27 | **2.37 dex** (≈ 250× off) |
+| `log_y="auto"` (default) | 32 | 0.9995 | **0.9995** | **0.13 dex** (≈ 37 % multiplicative) |
+
+The `_simplify_error` helper and the CLI's `--metrics` flag report
+`log_r_squared`, `log_rms_err`, and `log_max_dex_err` whenever `y` is
+strictly positive, so quality assessments on such data are in the
+right scale by default.  When rendering, use `plt.semilogy` (or equivalent)
+on the simplified points — that interpolates between them in log-y
+space, which is what the algorithm's internal quality target assumed.
 
 ## Dependencies
 
