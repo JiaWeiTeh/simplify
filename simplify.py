@@ -780,18 +780,40 @@ def _simplify(
             k_min = max(0, 5 - int(mandatory.size))
             k_max = len(optional)
 
-            # Binary search: minimum k for which R² >= target.
-            lo, hi = k_min, k_max
-            while lo < hi:
-                mid = (lo + hi) // 2
-                if _r2_at(mid) >= r2_target:
-                    hi = mid
-                else:
-                    lo = mid + 1
+            # Galloping search: expand exponentially from k_min until
+            # the trial first reaches the R² target, then binary-search
+            # inside the last doubling.  On typical inputs k_answer is
+            # orders of magnitude smaller than k_max (a smooth curve
+            # needs tens of points even when the candidate pool has
+            # hundreds of thousands), so spending ``log2(k_answer)``
+            # probes instead of ``log2(k_max)`` cuts the probe count —
+            # and the O(n) ``np.interp`` inside each probe — by roughly
+            # a factor of 2 on million-point noisy inputs.
+            if _r2_at(k_min) >= r2_target:
+                # Trivial case: minimum-size trial already meets target.
+                hi = k_min
+                lo = k_min
+            else:
+                lo = k_min
+                hi = min(max(k_min + 1, 8), k_max)
+                # Double hi until the target is crossed or k_max reached.
+                while hi < k_max and _r2_at(hi) < r2_target:
+                    lo = hi
+                    hi = min(hi * 2, k_max)
+                # Binary-search inside (lo, hi] for the smallest k
+                # achieving R² >= target.
+                while lo < hi:
+                    mid = (lo + hi) // 2
+                    if _r2_at(mid) >= r2_target:
+                        hi = mid
+                    else:
+                        lo = mid + 1
 
-            # Stability check: scan forward from lo until R² >= target
-            # for 3 consecutive k, guarding against local dips caused
-            # by noisy points.
+            # Stability check: advance k while R² dips below target to
+            # guard against local dips caused by noisy points.  The
+            # scan keeps going until we see 3 consecutive k's that
+            # stay on target — cheap insurance against a non-monotone
+            # R² curve near the threshold.
             stable_run = 0
             k = lo
             while k <= k_max:
