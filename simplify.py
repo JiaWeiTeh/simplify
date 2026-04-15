@@ -356,12 +356,57 @@ def _prune_collinear(
     return idx[alive]
 
 
+def _auto_log_y(y: np.ndarray, log_y) -> bool:
+    """
+    Resolve the ``log_y`` parameter into a plain boolean.
+
+    ``log_y`` may be:
+
+    * ``True``  – always transform.  Raises ``ValueError`` if ``y`` has
+      any non-positive values, because ``log10`` would be undefined.
+    * ``False`` – never transform.
+    * ``"auto"`` (default) – use a log transform when every finite value
+      of ``y`` is strictly positive **and** the dynamic range spans at
+      least two decades (``max(y) / min(y) > 100``).  This rule keeps
+      ordinary [−A, A]-style traces on the linear path and only kicks in
+      for physics profiles — density, temperature, flux — where log
+      handling is the natural choice.
+
+    The log path is what makes the algorithm good for multi-decade data:
+    every feature detector (bend, extrema, cumulative distance,
+    persistence) then works on ``log10(y)`` so samples are balanced
+    across decades instead of being dominated by the peak amplitude.
+    """
+    if log_y is True:
+        finite = y[np.isfinite(y)]
+        if finite.size and np.any(finite <= 0):
+            raise ValueError(
+                "log_y=True but y contains non-positive values; "
+                "pass log_y=False or log_y='auto' instead."
+            )
+        return True
+    if log_y is False:
+        return False
+    if log_y != "auto":
+        raise ValueError(
+            f"log_y must be True, False, or 'auto'; got {log_y!r}"
+        )
+    finite = y[np.isfinite(y)]
+    if finite.size == 0 or np.any(finite <= 0):
+        return False
+    y_min = float(finite.min())
+    if y_min <= 0:
+        return False
+    return float(finite.max()) / y_min > 100.0
+
+
 def _simplify(
     x_arr: Union[np.ndarray, Sequence[float]],
     y_arr: Union[np.ndarray, Sequence[float]],
     nmin: int = 100,
     grad_inc: float = 1.0,
     r2_target: float = 0.9,
+    log_y: Union[bool, str] = "auto",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Heuristic downsampling of a curve y(x) to approximately ``nmin`` points,
@@ -380,6 +425,14 @@ def _simplify(
     requested quality target, and a final collinearity pass prunes
     points that lie on the line between their neighbours (the main
     reason horizontal / linear stretches were previously over-sampled).
+
+    When ``log_y`` is active (and it auto-activates on strictly positive
+    inputs spanning ≥ 2 decades) every stage below operates on
+    ``log10(y)`` instead of raw ``y``.  The only effect on the caller
+    is that each decade contributes equally to the error metrics and
+    to the cumulative-distance sampler, which is the right behaviour
+    for density / temperature / flux profiles.  Output arrays still
+    carry the caller's original ``y`` values.
 
     1. **Scale-invariant bend detection**
        Both the exact Menger curvature κ (reciprocal of the
@@ -465,7 +518,22 @@ def _simplify(
         detection selects important points, the result is thinned to the
         minimum number of points that still achieves this R² value.
         Set to ``None`` to disable R²-based thinning and keep all
-        detected feature points.  Default is 0.9.
+        detected feature points.  Default is 0.9.  When ``log_y`` is
+        active the R² is computed in log-y space, so hitting 0.9 means
+        "90 % of the log-decade variance is captured" — the right
+        semantics for profiles that span multiple orders of magnitude.
+    log_y : bool or "auto", optional
+        Work in log-y space for every internal feature detector and for
+        the R² thinning step.  This is the recommended mode for
+        physics profiles that span multiple decades (density,
+        temperature, flux) because each decade contributes equally to
+        the error metrics and to the cumulative-distance sampler.
+        Pass ``True`` to force it (errors if any ``y <= 0``), ``False``
+        to keep the classic linear pipeline, or ``"auto"`` (default) to
+        switch to log-y whenever every finite ``y`` is positive and the
+        peak-to-trough ratio exceeds two decades.  The output arrays
+        always carry the caller's original ``y`` values at the selected
+        indices — only the *internal* computations are log-transformed.
 
     Returns
     -------
@@ -547,16 +615,24 @@ def _simplify(
     """
     # --- Input validation ---
     x = np.asarray(x_arr, dtype=float)
-    y = np.asarray(y_arr, dtype=float)
+    y_raw = np.asarray(y_arr, dtype=float)
 
     # Nothing to simplify for empty arrays.
-    if x.size == 0 or y.size == 0:
-        return x, y
-    if x.size != y.size:
+    if x.size == 0 or y_raw.size == 0:
+        return x, y_raw
+    if x.size != y_raw.size:
         raise ValueError(
             f"_simplify(): x and y must have the same length. "
-            f"Got {x.size} and {y.size}"
+            f"Got {x.size} and {y_raw.size}"
         )
+
+    # Resolve log-y mode.  ``y`` below is the working signal that every
+    # feature detector, the R² thinning step, and the collinearity
+    # prune operate on — either the caller's raw array or its decimal
+    # logarithm.  The output arrays always carry ``y_raw`` at the
+    # selected indices, so callers never see transformed values.
+    use_log = _auto_log_y(y_raw, log_y)
+    y = np.log10(y_raw) if use_log else y_raw
     # If the array is already short enough, return as-is.
     if nmin >= x.size:
         return x, y
@@ -667,9 +743,10 @@ def _simplify(
     if not np.isfinite(total_variation) or total_variation == 0:
         # Perfectly flat curve (or all NaN): no total variation means
         # no feature can be distinguished, so fall back to uniform
-        # spacing at the requested budget.
+        # spacing at the requested budget.  Return raw y so the
+        # caller's original values are preserved even when log_y is on.
         idx = np.unique(np.linspace(0, x.size - 1, nmin).astype(int))
-        return x[idx], y[idx]
+        return x[idx], y_raw[idx]
 
     # Dividing the total variation into ``nmin`` equal bins gives an
     # implicit bin width; a bin-boundary crossing between consecutive
@@ -844,7 +921,11 @@ def _simplify(
                     merged, x, y, tol=1e-3 * y_range, protected=mandatory,
                 )
 
-    return x[merged], y[merged]
+    # ``y`` above was the working (optionally log-transformed) signal
+    # used for every internal decision; the output sends the caller's
+    # original values back so simplification is transparent on the
+    # input's native scale.
+    return x[merged], y_raw[merged]
 
 
 def _simplify_error(
@@ -895,6 +976,23 @@ def _simplify_error(
             Number of points in the original curve.
         - ``"n_simp"`` : int
             Number of points in the simplified curve.
+        - ``"log_r_squared"`` : float
+            R² computed in decimal-log y-space against a log-linear
+            reconstruction (straight line between samples in
+            ``(x, log10 y)``).  Decade-balanced — the right fidelity
+            measure for density / temperature / flux profiles that
+            span multiple orders of magnitude.  ``nan`` if any
+            ``y <= 0``.
+        - ``"log_rms_err"`` : float
+            RMSE of the log10 residual, in dex.  ``nan`` if any
+            ``y <= 0``.
+        - ``"log_max_dex_err"`` : float
+            Worst-case log-space deviation in dex (L∞).  ``0.01`` ≈ 2 %
+            multiplicative; ``0.1`` ≈ 26 %; ``1.0`` = one whole decade
+            off.  ``nan`` if any ``y <= 0``.
+        - ``"log_mean_dex_err"`` : float
+            Mean absolute log-space deviation in dex.  ``nan`` if any
+            ``y <= 0``.
 
     Examples
     --------
@@ -909,13 +1007,13 @@ def _simplify_error(
     x_s = np.asarray(x_simp, dtype=float)
     y_s = np.asarray(y_simp, dtype=float)
 
-    # Interpolate the simplified curve back onto the original x-grid.
+    # Linear reconstruction: the naive "connect the dots" interpretation
+    # of the simplified points.  All linear-space metrics below are
+    # taken against this.
     y_interp = np.interp(x_o, x_s, y_s)
-
-    # Pointwise residuals.
     residual = y_o - y_interp
 
-    # --- Error metrics ---
+    # --- Linear-space error metrics ---
     max_abs = float(np.max(np.abs(residual)))
     mean_abs = float(np.mean(np.abs(residual)))
     rms = float(np.sqrt(np.mean(residual ** 2)))
@@ -928,12 +1026,12 @@ def _simplify_error(
     else:
         max_rel = 0.0
 
-    # R² (coefficient of determination).
+    # R² (coefficient of determination) in linear space.
     ss_res = np.sum(residual ** 2)
     ss_tot = np.sum((y_o - np.mean(y_o)) ** 2)
     r_squared = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 1.0
 
-    return {
+    metrics = {
         "max_abs_err": max_abs,
         "mean_abs_err": mean_abs,
         "rms_err": rms,
@@ -943,6 +1041,36 @@ def _simplify_error(
         "n_orig": int(x_o.size),
         "n_simp": int(x_s.size),
     }
+
+    # --- Log-space error metrics -------------------------------------
+    # When every y is strictly positive we can also report metrics in
+    # decimal-log space, which is what callers with density /
+    # temperature / flux profiles actually care about (each decade
+    # contributes equally).  The reconstruction used for the log
+    # metrics is *log-linear* — i.e. a straight line between samples
+    # in ``(x, log10 y)`` — because that is how matplotlib's log-y
+    # plots render segments and is also how the log-y path of
+    # _simplify judges quality internally.  All four fields are set to
+    # NaN when the log transform is undefined (any y <= 0).
+    log_keys = ("log_r_squared", "log_rms_err", "log_max_dex_err",
+                "log_mean_dex_err")
+    if np.all(y_o > 0) and np.all(y_s > 0) and y_o.size > 0 and x_s.size > 0:
+        log_y_o = np.log10(y_o)
+        log_interp = np.interp(x_o, x_s, np.log10(y_s))
+        log_res = log_y_o - log_interp
+        ss_res_log = float(np.sum(log_res ** 2))
+        ss_tot_log = float(np.sum((log_y_o - np.mean(log_y_o)) ** 2))
+        metrics["log_r_squared"] = (
+            1.0 - ss_res_log / ss_tot_log if ss_tot_log > 0 else 1.0
+        )
+        metrics["log_rms_err"] = float(np.sqrt(np.mean(log_res ** 2)))
+        metrics["log_max_dex_err"] = float(np.max(np.abs(log_res)))
+        metrics["log_mean_dex_err"] = float(np.mean(np.abs(log_res)))
+    else:
+        for k in log_keys:
+            metrics[k] = float("nan")
+
+    return metrics
 
 
 def _simplify_plot(
@@ -1602,6 +1730,18 @@ def _simplify_cli():
              "R² reaches this value.  Use None to keep all detected points.",
     )
     parser.add_argument(
+        "--log-y",
+        choices=("auto", "on", "off"),
+        default="auto",
+        help=(
+            "Work in log-y space for every internal feature detector "
+            "and the R² thinning step.  'auto' (default) switches to "
+            "log when every y > 0 and max(y)/min(y) > 100 — the right "
+            "behaviour for density / temperature / flux profiles.  "
+            "Use 'on' to force, 'off' to keep the classic linear path."
+        ),
+    )
+    parser.add_argument(
         "--random",
         action="store_true",
         help=(
@@ -1667,8 +1807,11 @@ def _simplify_cli():
         parser.error("either provide an input file or use --random.")
 
     # --- Simplify ---
-    x_out, y_out = _simplify(x, y, nmin=args.nmin, grad_inc=args.grad_inc,
-                              r2_target=args.r2_target)
+    log_y_arg = {"auto": "auto", "on": True, "off": False}[args.log_y]
+    x_out, y_out = _simplify(
+        x, y, nmin=args.nmin, grad_inc=args.grad_inc,
+        r2_target=args.r2_target, log_y=log_y_arg,
+    )
 
     # --- Write output ---
     np.savetxt(
@@ -1696,6 +1839,12 @@ def _simplify_cli():
         print(f"  RMS error          : {metrics['rms_err']:.4e}")
         print(f"  Max relative error : {metrics['max_rel_err']:.4e}")
         print(f"  R-squared          : {metrics['r_squared']:.6f}")
+        # Log-space metrics are NaN when y has any non-positive values;
+        # skip their printout in that case to avoid a confusing "nan" row.
+        if not np.isnan(metrics["log_r_squared"]):
+            print(f"  R-squared (log10y) : {metrics['log_r_squared']:.6f}")
+            print(f"  RMS error  (log10y): {metrics['log_rms_err']:.4e} dex")
+            print(f"  Max dex error      : {metrics['log_max_dex_err']:.4e} dex")
         print(f"  Compression ratio  : {metrics['compression']:.1f}x")
 
     # --- Optional: plot ---
