@@ -1341,6 +1341,7 @@ def _simplify_animate(
 def _random_test_curve(
     npts: int = 10_000,
     seed: Union[int, None] = None,
+    noise: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Generate a random 1-D curve that exercises every simplification strategy.
@@ -1355,11 +1356,15 @@ def _random_test_curve(
       curve.  These are "redundant" regions where cumulative-distance
       sampling should thin aggressively.
     - **Sharp spikes** – 2–5 narrow Gaussian pulses of random height.
-      Their steep flanks trigger the Menger-curvature detector.
+      Their steep flanks trigger the bend detector.
     - **Step discontinuities** – 1–3 Heaviside-like jumps (smoothed over
       a handful of points) that create abrupt level shifts.
-    - **Gaussian noise** – low-amplitude noise added everywhere, so the
-      algorithm must distinguish real features from jitter.
+    - **Gaussian noise** – low-amplitude noise added everywhere when
+      ``noise=True``, so the algorithm must distinguish real features
+      from jitter.  Set ``noise=False`` to produce the deterministic
+      feature skeleton with no added jitter; useful for timing runs
+      where noise-driven sign flips would otherwise flood the feature
+      pool and dominate the profile.
 
     Parameters
     ----------
@@ -1368,6 +1373,9 @@ def _random_test_curve(
     seed : int or None, optional
         Random seed for reproducibility.  ``None`` gives a different curve
         each time.
+    noise : bool, optional
+        If ``True`` (default) add Gaussian noise at 0.1 % of the curve's
+        peak-to-peak range.  Set ``False`` for a noise-free reference.
 
     Returns
     -------
@@ -1414,7 +1422,7 @@ def _random_test_curve(
         y = y * (1.0 - window) + level * window
 
     # ------------------------------------------------------------------
-    # 3. Sharp spikes (Menger-curvature detection)
+    # 3. Sharp spikes (bend detector)
     # ------------------------------------------------------------------
     n_spikes = rng.integers(2, 6)                      # 2–5 spikes
     for _ in range(n_spikes):
@@ -1439,11 +1447,15 @@ def _random_test_curve(
         y += height / (1.0 + np.exp(arg))
 
     # ------------------------------------------------------------------
-    # 5. Tiny Gaussian noise — just enough to be realistic, not enough
-    #    to trigger the curvature detector on smooth stretches.
+    # 5. Optional Gaussian noise — a realistic jitter floor so the
+    #    noise-level filters (persistence-threshold on extrema,
+    #    collinearity prune) get exercised.  Off ⇒ a clean reference
+    #    curve whose sign-change detector fires at most a few hundred
+    #    times, making the fast path easy to time.
     # ------------------------------------------------------------------
-    noise_amp = 0.001 * (np.max(y) - np.min(y) + 1e-30)
-    y += rng.normal(0.0, noise_amp, size=npts)
+    if noise:
+        noise_amp = 0.001 * (np.max(y) - np.min(y) + 1e-30)
+        y += rng.normal(0.0, noise_amp, size=npts)
 
     return x, y
 
@@ -1505,14 +1517,17 @@ def _simplify_cli():
         epilog=(
             "Example:\n"
             "  python simplify.py data.csv -o reduced.csv --nmin 200\n\n"
-            "The algorithm combines five stages:\n"
-            "  1. Menger-curvature detection  -- keeps sharp bends\n"
-            "  2. Sign-change detection       -- keeps local extrema\n"
+            "The algorithm combines six stages:\n"
+            "  1. Scale-invariant bend detection -- Menger curvature plus\n"
+            "     turning angle in normalised coords, both gated by --grad-inc\n"
+            "  2. Sign-change detection -- keeps local extrema, noise-filtered\n"
             "  3. Cumulative-distance sampling -- uniform arc-length in y\n"
             "  4. Topological-persistence filter -- marks prominent extrema\n"
             "     as mandatory so big features never flicker in and out\n"
-            "  5. R²-based thinning -- hierarchical bisection + binary\n"
-            "     search picks the smallest subset meeting --r2-target"
+            "  5. R²-based thinning -- galloping + binary search picks the\n"
+            "     smallest subset meeting --r2-target\n"
+            "  6. Collinearity prune -- drops interior points that lie on\n"
+            "     the chord between their neighbours"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1538,7 +1553,9 @@ def _simplify_cli():
         "--grad-inc",
         type=float,
         default=1.0,
-        help="Menger curvature threshold (default: 1.0, units: 1/length).",
+        help="Bend sensitivity (dimensionless, scale-invariant).  "
+             "Fires when normalised Menger curvature > grad_inc or turning "
+             "angle > 0.1 * grad_inc rad.  Default: 1.0.",
     )
     parser.add_argument(
         "--metrics",
@@ -1606,14 +1623,31 @@ def _simplify_cli():
         default=10_000,
         help="Number of points in the random curve (default: 10000).",
     )
+    # --noise / --no-noise: whether --random should add Gaussian jitter.
+    # BooleanOptionalAction (Python 3.9+) gives both spellings from one
+    # argument and carries the default forward for --help output.
+    parser.add_argument(
+        "--noise",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Add Gaussian noise (0.1 %% of y-range) to the --random "
+             "curve.  Pass --no-noise for a deterministic, jitter-free "
+             "reference that is much faster to simplify because the "
+             "sign-change detector fires at most a handful of times.",
+    )
 
     args = parser.parse_args()
 
     # --- Obtain input data ---
     if args.random:
-        x, y = _random_test_curve(npts=args.random_npts, seed=args.seed)
+        x, y = _random_test_curve(
+            npts=args.random_npts, seed=args.seed, noise=args.noise,
+        )
         seed_str = f", seed={args.seed}" if args.seed is not None else ""
-        source_label = f"random curve ({args.random_npts} pts{seed_str})"
+        noise_str = "" if args.noise else ", no noise"
+        source_label = (
+            f"random curve ({args.random_npts} pts{seed_str}{noise_str})"
+        )
         print(f"Generated {source_label}.")
     elif args.infile is not None:
         # Try comma-delimited first, fall back to whitespace.

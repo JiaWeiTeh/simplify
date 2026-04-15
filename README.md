@@ -3,19 +3,33 @@
 Heuristic downsampling of 1-D curves while preserving sharp bends, local
 extrema, and overall shape. Single file, no dependencies beyond NumPy.
 
-![Simplification demo](demo.gif)
+| Noisy input (default) | Clean input (`--no-noise`) |
+|:---:|:---:|
+| ![Simplification demo with noise](demo.gif) | ![Simplification demo without noise](demo_nonoise.gif) |
+| R² ≥ 0.9 first reached at **n = 40** | R² ≥ 0.9 first reached at **n = 44** |
 
-The animation above was produced with:
+Both animations progressively add points to a 10 000-point random test
+curve and stop once R² ≥ 0.9 (green dashed line in the bottom panel).
+The bottom panel shows RMSE on a log-log scale with dashed reference
+lines at R² = 0.9, 0.99, 0.999.
+
+Generated with:
 
 ```bash
 python simplify.py --random --seed 42 --animate demo.gif --animate-duration 5
+python simplify.py --random --seed 42 --no-noise --animate demo_nonoise.gif --animate-duration 5
 ```
 
-It progressively adds points to a 10 000-point noisy test curve and
-stops once R² ≥ 0.9 (green dashed line, here at n = 40). The bottom
-panel shows RMSE on a log-log scale with dashed reference lines at
-R² = 0.9, 0.99, 0.999 so the remaining distance to a perfect fit is
-visible at a glance.
+The `--no-noise` flag drops the 0.1 %-amplitude Gaussian jitter that
+the random test curve otherwise adds.  With noise off the input is a
+deterministic sum of sinusoids, plateaus, spikes and step
+discontinuities — the sign-change detector fires only on real
+features rather than on every adjacent-sample noise flip, so the
+feature pool shrinks substantially (≈ 5 700 pts vs ≈ 9 900 pts for
+this seed) and the R²-thinning step has less material to sift through.
+Visually the difference is most obvious in the top panel: the noisy
+run's simplified curve tracks the jittery signal, while the clean run
+tracks a smoother underlying shape.
 
 ## Quick start
 
@@ -30,6 +44,7 @@ simplification process. Other quick demos:
 python simplify.py --random --metrics                          # error table
 python simplify.py --random --plot                             # comparison plot
 python simplify.py --random --animate demo.gif --r2-target 0.95  # tighter fit
+python simplify.py --random --no-noise --animate clean.gif     # deterministic curve
 ```
 
 ## Command line
