@@ -15,6 +15,7 @@ _simplify_plot     Static before/after comparison plot.
 _simplify_animate  Animated GIF/MP4 of the simplification process.
 _peak_prominences  1-D topological persistence (O(n log n)).
 _random_test_curve Generate a random curve that exercises all strategies.
+_load_sb99_5myr    Bundled Starburst99 SED at 5 Myr (log λ vs log L_λ).
 _simplify_cli      Command-line interface (reads two-column text files).
 """
 
@@ -25,6 +26,9 @@ import numpy as np
 
 # Path to the bundled matplotlib style file.
 _STYLE_FILE = Path(__file__).parent / "simplify.mplstyle"
+
+# Bundled Starburst99 SED (instantaneous burst, 5 Myr slice).
+_SB99_5MYR_FILE = Path(__file__).parent / "data" / "sb99_5myr.dat"
 
 
 def _prev_next_strict(y: np.ndarray, greater: bool) -> Tuple[np.ndarray, np.ndarray]:
@@ -1181,6 +1185,8 @@ def _simplify_animate(
     title: str = "Curve simplification",
     n_steps: int = 30,
     r2_target: float = 0.9,
+    xlabel: str = r"$x$",
+    ylabel: str = r"$y$",
 ) -> None:
     """
     Create an animated GIF showing progressive curve simplification.
@@ -1345,8 +1351,8 @@ def _simplify_animate(
     margin = 0.05 * (np.nanmax(y_o) - np.nanmin(y_o) + 1e-30)
     ax.set_xlim(x_o[0], x_o[-1])
     ax.set_ylim(np.nanmin(y_o) - margin, np.nanmax(y_o) + margin)
-    ax.set_ylabel(r"$y$")
-    ax.set_xlabel(r"$x$")
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel(xlabel)
     ax.set_title(title)
 
     # Thin underlying curve (always visible).
@@ -1588,6 +1594,41 @@ def _random_test_curve(
     return x, y
 
 
+def _load_sb99_5myr() -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Load the bundled Starburst99 SED at 5 Myr.
+
+    Returns the luminosity curve as ``(x, y) = (log10 wavelength [Å],
+    log10 L_λ [erg / s / Å])``.  Working in log–log coordinates lets the
+    linear-axis plotters and the core simplifier treat the curve
+    uniformly across its ~4 decades of wavelength and ~6 dex dynamic
+    range, exactly as spectral-energy-distribution plots are
+    conventionally displayed.
+
+    The 5 Myr column has no missing-data sentinels so no masking is
+    needed.  The other age columns in the Starburst99 table are
+    intentionally discarded at extract time and are not available here.
+
+    Returns
+    -------
+    x : np.ndarray, shape (1221,)
+        ``log10(wavelength [Å])``, monotonically increasing from ~1.96
+        (91 Å) to 6.20 (1.6 × 10⁶ Å).
+    y : np.ndarray, shape (1221,)
+        ``log10(L_λ [erg / s / Å])`` at 5 Myr after an instantaneous
+        burst (Z = Z_☉, Kroupa IMF, default Starburst99 tracks).
+
+    Examples
+    --------
+    >>> x, y = _load_sb99_5myr()
+    >>> x_s, y_s = _simplify(x, y, r2_target=0.99)
+    """
+    data = np.loadtxt(_SB99_5MYR_FILE, comments="#")
+    wavelength = data[:, 0]
+    log_lum    = data[:, 1]
+    return np.log10(wavelength), log_lum
+
+
 # =============================================================================
 # CLI entry point
 # =============================================================================
@@ -1752,6 +1793,17 @@ def _simplify_cli():
         ),
     )
     parser.add_argument(
+        "--randomSB99",
+        action="store_true",
+        help=(
+            "Use the bundled Starburst99 SED at 5 Myr as the input "
+            "curve (log10 wavelength vs log10 luminosity) instead of "
+            "reading a file.  A real-data example: broad UV bump, "
+            "Balmer/Paschen jumps, and a smooth Rayleigh–Jeans tail "
+            "across ~4 decades of wavelength."
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -1779,6 +1831,8 @@ def _simplify_cli():
     args = parser.parse_args()
 
     # --- Obtain input data ---
+    if args.random and args.randomSB99:
+        parser.error("--random and --randomSB99 are mutually exclusive.")
     if args.random:
         x, y = _random_test_curve(
             npts=args.random_npts, seed=args.seed, noise=args.noise,
@@ -1789,6 +1843,10 @@ def _simplify_cli():
             f"random curve ({args.random_npts} pts{seed_str}{noise_str})"
         )
         print(f"Generated {source_label}.")
+    elif args.randomSB99:
+        x, y = _load_sb99_5myr()
+        source_label = f"Starburst99 SED at 5 Myr ({x.size} pts)"
+        print(f"Loaded {source_label}.")
     elif args.infile is not None:
         # Try comma-delimited first, fall back to whitespace.
         try:
@@ -1804,7 +1862,9 @@ def _simplify_cli():
         x, y = data[:, 0], data[:, 1]
         source_label = f"'{args.infile}'"
     else:
-        parser.error("either provide an input file or use --random.")
+        parser.error(
+            "either provide an input file, use --random, or use --randomSB99."
+        )
 
     # --- Simplify ---
     log_y_arg = {"auto": "auto", "on": True, "off": False}[args.log_y]
@@ -1858,6 +1918,10 @@ def _simplify_cli():
 
     # --- Optional: animation ---
     if args.animate:
+        anim_kwargs = {}
+        if args.randomSB99:
+            anim_kwargs["xlabel"] = r"$\log_{10}(\lambda\ [\mathrm{\AA}])$"
+            anim_kwargs["ylabel"] = r"$\log_{10}(L_{\lambda}\ [\mathrm{erg/s/\AA}])$"
         _simplify_animate(
             x, y,
             save_path=args.animate,
@@ -1865,6 +1929,7 @@ def _simplify_cli():
             duration=args.animate_duration,
             title=f"Simplification of {source_label}",
             r2_target=args.r2_target,
+            **anim_kwargs,
         )
 
 

@@ -20,6 +20,28 @@ python simplify.py --random --seed 42 --animate demo.gif --animate-duration 5
 python simplify.py --random --seed 42 --no-noise --animate demo_nonoise.gif --animate-duration 5
 ```
 
+### Real data — Starburst99 5 Myr SED
+
+| `R² ≥ 0.9` (default) | `R² ≥ 0.99` (tight) |
+|:---:|:---:|
+| ![Starburst99 5 Myr R²=0.9](demo_sb99_loose.gif) | ![Starburst99 5 Myr R²=0.99](demo_sb99_tight.gif) |
+| 1221 pts → **9** pts (136× compression) | 1221 pts → **16** pts (76× compression) |
+
+The curve is the Starburst99 `LOG (TOTAL)` SED column at 5 Myr
+(instantaneous burst, Z = Z☉) — a real astrophysical spectrum spanning
+91 Å to 1.6 × 10⁶ Å in wavelength and ~6 dex in luminosity.  `x` is
+`log10(λ/Å)` and `y` is `log10(L_λ / (erg s⁻¹ Å⁻¹))`; the simplifier
+sees a 1221-point log–log curve with a steep UV bump, a broad
+Balmer/Paschen plateau, and a smooth Rayleigh–Jeans tail.  Nine
+points already reproduce the spectrum at R² ≈ 0.96; sixteen push R²
+past 0.99 and cap the worst-case log deviation at ≈ 0.01 dex (≈ 2.5 %
+multiplicative).  Generated with:
+
+```bash
+python simplify.py --randomSB99 --animate demo_sb99_loose.gif --animate-duration 6
+python simplify.py --randomSB99 --animate demo_sb99_tight.gif --animate-duration 6 --r2-target 0.99
+```
+
 The `--no-noise` flag drops the 0.1 %-amplitude Gaussian jitter that
 the random test curve otherwise adds.  With noise off the input is a
 deterministic sum of sinusoids, plateaus, spikes and step
@@ -45,6 +67,7 @@ python simplify.py --random --metrics                          # error table
 python simplify.py --random --plot                             # comparison plot
 python simplify.py --random --animate demo.gif --r2-target 0.95  # tighter fit
 python simplify.py --random --no-noise --animate clean.gif     # deterministic curve
+python simplify.py --randomSB99 --animate sb99.gif --r2-target 0.99  # real SED data
 ```
 
 ## Command line
