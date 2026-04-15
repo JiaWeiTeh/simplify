@@ -1181,6 +1181,7 @@ def _simplify_animate(
     title: str = "Curve simplification",
     n_steps: int = 30,
     r2_target: float = 0.9,
+    log_y: Union[bool, str] = "auto",
 ) -> None:
     """
     Create an animated GIF showing progressive curve simplification.
@@ -1238,9 +1239,15 @@ def _simplify_animate(
 
     # --- Precompute simplification at increasing point counts ---
     # Start from 5 points and build up to the full feature-detected set.
-    # First get all feature-detected indices (no R² thinning).
-    x_full, y_full = _simplify(x_o, y_o, r2_target=None)
+    # First get all feature-detected indices (no R² thinning).  Pass the
+    # caller's ``log_y`` forward so the feature pool is built in the
+    # same space the animation will display.
+    x_full, y_full = _simplify(x_o, y_o, r2_target=None, log_y=log_y)
     n_full = x_full.size
+
+    # Working y for every prominence / R² decision below: either the
+    # caller's linear data or its log10, matching _simplify's rule.
+    y_work = np.log10(y_o) if _auto_log_y(y_o, log_y) else y_o
 
     # Generate log-spaced point counts from 5 up to full.
     pt_counts = np.unique(
@@ -1257,13 +1264,15 @@ def _simplify_animate(
     full_idx = np.sort(np.searchsorted(x_o, x_full))
 
     # Identify topologically persistent extrema (mandatory set) using
-    # the same prominence-threshold rule as _simplify.
-    grad_o = np.gradient(y_o)
-    sign_idx = np.where(np.diff(np.sign(grad_o)) != 0)[0]
-    y_rng = float(np.nanmax(y_o) - np.nanmin(y_o))
+    # the same prominence-threshold rule as _simplify, but run the
+    # computation on ``y_work`` so the log-y path uses log-space
+    # prominence just like the core algorithm does.
+    grad_w = np.gradient(y_work)
+    sign_idx = np.where(np.diff(np.sign(grad_w)) != 0)[0]
+    y_rng = float(np.nanmax(y_work) - np.nanmin(y_work))
     prom_thresh = 0.05 * y_rng
     if sign_idx.size > 0 and y_rng > 0:
-        proms = _peak_prominences(y_o, sign_idx)
+        proms = _peak_prominences(y_work, sign_idx)
         prominent_idx = sign_idx[proms >= prom_thresh]
     else:
         prominent_idx = np.array([], dtype=int)
@@ -1296,6 +1305,14 @@ def _simplify_animate(
         mandatory = np.array([], dtype=int)
         optional = bisection_pool
 
+    # When rendering on a log y-axis, the R² / RMSE we care about are
+    # the *log-space* ones — they match what the eye sees across
+    # decades and are what _simplify's log_y path is optimising.  On
+    # the linear path we fall back to the linear-space metrics.
+    use_log_metric = _auto_log_y(y_o, log_y)
+    r2_key = "log_r_squared" if use_log_metric else "r_squared"
+    rms_key = "log_rms_err" if use_log_metric else "rms_err"
+
     steps = []
     for npts in pt_counts:
         # Every frame is mandatory ∪ optional[:k] — the mandatory set
@@ -1310,8 +1327,8 @@ def _simplify_animate(
             "npts": m["n_simp"],
             "x": x_s,
             "y": y_s,
-            "rms": m["rms_err"],
-            "r2": m["r_squared"],
+            "rms": m[rms_key],
+            "r2": m[r2_key],
         })
 
     # Deduplicate steps with same npts (can happen when _simplify returns
@@ -1342,9 +1359,20 @@ def _simplify_animate(
         2, 1, figsize=(7, 5.5),
         gridspec_kw={"height_ratios": [3, 1], "hspace": 0.30},
     )
-    margin = 0.05 * (np.nanmax(y_o) - np.nanmin(y_o) + 1e-30)
+    # Resolve log-y mode with the same rule as ``_simplify`` so the
+    # axis matches what the algorithm is optimising for.  When log is
+    # active we also give the y-axis a small multiplicative margin
+    # instead of the additive one used in linear mode.
+    use_log_y = _auto_log_y(y_o, log_y)
     ax.set_xlim(x_o[0], x_o[-1])
-    ax.set_ylim(np.nanmin(y_o) - margin, np.nanmax(y_o) + margin)
+    if use_log_y:
+        ax.set_yscale("log")
+        y_lo = float(np.nanmin(y_o))
+        y_hi = float(np.nanmax(y_o))
+        ax.set_ylim(y_lo * 0.5, y_hi * 2.0)
+    else:
+        margin = 0.05 * (np.nanmax(y_o) - np.nanmin(y_o) + 1e-30)
+        ax.set_ylim(np.nanmin(y_o) - margin, np.nanmax(y_o) + margin)
     ax.set_ylabel(r"$y$")
     ax.set_xlabel(r"$x$")
     ax.set_title(title)
@@ -1363,12 +1391,14 @@ def _simplify_animate(
     )
 
     # --- Error subplot: log-RMSE vs n_points (log-log) ---
-    # RMSE = sigma_y * sqrt(1 - R^2) where sigma_y is the population
-    # standard deviation of y_o, so fixed R^2 thresholds map to fixed
+    # RMSE = sigma * sqrt(1 - R^2) where sigma is the population
+    # standard deviation of the signal the metric is taken against
+    # (linear y or log10 y), so fixed R^2 thresholds map to fixed
     # RMSE levels on the log y-axis — equally spaced half-decade
     # reference lines at R^2 = 0.9, 0.99, 0.999 form a visual ladder
     # showing how close the simplification is to perfect reconstruction.
-    sigma_y = float(np.sqrt(np.mean((y_o - np.mean(y_o)) ** 2)))
+    _sigma_src = np.log10(y_o) if use_log_metric else y_o
+    sigma_y = float(np.sqrt(np.mean((_sigma_src - np.mean(_sigma_src)) ** 2)))
     r2_levels = (0.9, 0.99, 0.999)
     rms_levels = [sigma_y * np.sqrt(1.0 - r) for r in r2_levels]
 
@@ -1382,7 +1412,7 @@ def _simplify_animate(
     ax_err.set_xscale("log")
     ax_err.set_yscale("log")
     ax_err.set_xlabel(r"Number of points $n$")
-    ax_err.set_ylabel(r"RMSE")
+    ax_err.set_ylabel(r"RMSE (log10 y)" if use_log_metric else r"RMSE")
 
     # Reference hlines at R^2 = 0.9 / 0.99 / 0.999.
     for r2_lvl, rms_lvl in zip(r2_levels, rms_levels):
@@ -1588,6 +1618,79 @@ def _random_test_curve(
     return x, y
 
 
+def _sb99_like_curve(
+    npts: int = 10_000,
+    tmax_myr: float = 5.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Synthetic, SB99-motivated mechanical-luminosity evolution curve.
+
+    *This is not real Starburst99 output* — the STScI archive that
+    hosts the official ``.dat`` files is access-restricted for this
+    tool, so the curve below is an analytic stand-in built from the
+    physics components that shape a standard instantaneous-burst SB99
+    model (10⁶ M☉ cluster, ~solar metallicity, Kroupa-style IMF): a
+    rising OB-wind plateau, a brief Wolf–Rayet-phase peak near
+    3–4 Myr, a rapid turn-on of core-collapse supernova injection,
+    and the resulting high-luminosity plateau that lasts until the
+    last massive stars exhaust their fuel.
+
+    The curve spans roughly two orders of magnitude in L_mech and is
+    strictly positive, which means it auto-triggers the ``log_y``
+    code path in ``_simplify`` and makes a good visual demo of what
+    the log-y pipeline does on real astrophysics profiles.  Swap
+    it out for an actual SB99 ``.dat`` file (two-column, time vs. L)
+    through the normal positional CLI argument when you have one.
+
+    Parameters
+    ----------
+    npts : int, optional
+        Number of points in the output curve.  Default: 10 000.
+    tmax_myr : float, optional
+        End time in Myr.  Default: 5.0 (covers the OB → WR → SN
+        transition that gives the curve its characteristic shape).
+
+    Returns
+    -------
+    t : np.ndarray, shape (npts,)
+        Time in Myr, log-spaced from 0.1 Myr to ``tmax_myr`` so the
+        rapid early evolution is resolved.
+    L : np.ndarray, shape (npts,)
+        Mechanical luminosity in erg s⁻¹ (strictly positive).
+    """
+    # Log-spaced time grid — the curve varies fastest at early times.
+    t = np.logspace(-1.0, np.log10(tmax_myr), npts)                 # Myr
+
+    # 1. OB-wind contribution.  At t ≲ 0.3 Myr the massive stars have
+    #    only just reached the main sequence and their winds are weak
+    #    (L_mech ~ 10^38 erg s⁻¹); by ~1 Myr the full O-star population
+    #    is blowing and L_mech settles onto the ~10^39.8 plateau.  The
+    #    exponential-in-t turn-on spans that ~1 Myr ramp.
+    L_ob = 10.0 ** (38.0 + 2.0 * (1.0 - np.exp(-t / 0.5)))
+
+    # 2. Wolf–Rayet peak: a Gaussian-in-log-time bump centred at
+    #    ~3.5 Myr, reaching 10^40.7 erg s⁻¹.  Width chosen so the
+    #    peak is clearly resolved but narrow enough to test the
+    #    bend detector on a sharp feature in log-y.
+    L_wr_peak = 10.0 ** 40.7
+    wr_window = np.exp(-((np.log10(t) - np.log10(3.5)) / 0.08) ** 2)
+    L_wr = L_wr_peak * wr_window
+
+    # 3. Core-collapse SN injection: logistic turn-on around 3.7 Myr
+    #    (first type-II progenitors dying), plateau at ~10^41.3, then
+    #    a slow power-law decline (L ~ t^-0.3) until tmax.
+    sn_onset = 3.7                                                  # Myr
+    sn_ramp = 1.0 / (1.0 + np.exp(-(t - sn_onset) / 0.1))
+    L_sn_plateau = 10.0 ** (41.3 - 0.3 * np.log10(np.maximum(t / 4.0, 1e-3)))
+    L_sn = L_sn_plateau * sn_ramp
+
+    # Total mechanical luminosity — three physically additive channels.
+    # Dynamic range ends up ≈ 10^3 over 0.1–5 Myr which auto-triggers
+    # the log_y pipeline in ``_simplify``.
+    L = L_ob + L_wr + L_sn
+    return t, L
+
+
 # =============================================================================
 # CLI entry point
 # =============================================================================
@@ -1775,8 +1878,28 @@ def _simplify_cli():
              "reference that is much faster to simplify because the "
              "sign-change detector fires at most a handful of times.",
     )
+    parser.add_argument(
+        "--randomSB99",
+        action="store_true",
+        help=(
+            "Generate a synthetic SB99-motivated mechanical-luminosity "
+            "curve (strictly positive, ~2 decades of dynamic range) and "
+            "simplify it.  Good for showcasing the log-y code path on "
+            "realistic astrophysical profiles.  Mutually exclusive with "
+            "--random."
+        ),
+    )
+    parser.add_argument(
+        "--randomSB99-tmax",
+        type=float,
+        default=5.0,
+        help="End time in Myr for the --randomSB99 curve (default: 5.0).",
+    )
 
     args = parser.parse_args()
+
+    if args.random and args.randomSB99:
+        parser.error("--random and --randomSB99 are mutually exclusive.")
 
     # --- Obtain input data ---
     if args.random:
@@ -1787,6 +1910,15 @@ def _simplify_cli():
         noise_str = "" if args.noise else ", no noise"
         source_label = (
             f"random curve ({args.random_npts} pts{seed_str}{noise_str})"
+        )
+        print(f"Generated {source_label}.")
+    elif args.randomSB99:
+        x, y = _sb99_like_curve(
+            npts=args.random_npts, tmax_myr=args.randomSB99_tmax,
+        )
+        source_label = (
+            f"SB99-like L_mech(t) [{args.random_npts} pts, "
+            f"0.1-{args.randomSB99_tmax:g} Myr]"
         )
         print(f"Generated {source_label}.")
     elif args.infile is not None:
@@ -1804,7 +1936,9 @@ def _simplify_cli():
         x, y = data[:, 0], data[:, 1]
         source_label = f"'{args.infile}'"
     else:
-        parser.error("either provide an input file or use --random.")
+        parser.error(
+            "either provide an input file, --random, or --randomSB99."
+        )
 
     # --- Simplify ---
     log_y_arg = {"auto": "auto", "on": True, "off": False}[args.log_y]
@@ -1865,6 +1999,7 @@ def _simplify_cli():
             duration=args.animate_duration,
             title=f"Simplification of {source_label}",
             r2_target=args.r2_target,
+            log_y=log_y_arg,
         )
 
 

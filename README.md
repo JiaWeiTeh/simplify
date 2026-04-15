@@ -31,6 +31,33 @@ Visually the difference is most obvious in the top panel: the noisy
 run's simplified curve tracks the jittery signal, while the clean run
 tracks a smoother underlying shape.
 
+### Real astrophysics: SB99-like mechanical-luminosity evolution
+
+![SB99-like L_mech(t) simplification](demo_sb99.gif)
+
+A synthetic [Starburst99](https://www.stsci.edu/science/starburst99/)-motivated
+mechanical-luminosity evolution, L_mech(t), for an instantaneous-burst cluster
+out to 5 Myr — OB-wind ramp-up, brief Wolf–Rayet peak at ~3.5 Myr, and the
+core-collapse-supernova plateau that takes over at ~3.7 Myr.  The curve spans
+~3 decades in L, which auto-triggers the log-y pipeline in `_simplify`: every
+detector and the R² thinning step then run on `log10(L)` and sampling is
+balanced across decades instead of being dominated by the SN plateau.  The
+log-y animation shows the top panel on a log L axis and the bottom panel's
+R²/RMSE lines computed in log10 space.  On this curve `log R² ≥ 0.99` is first
+reached at **n = 21**, compared with the ≈ 10 000-point input.
+
+Generated with:
+
+```bash
+python simplify.py --randomSB99 --animate demo_sb99.gif --animate-duration 5 --r2-target 0.99
+```
+
+The curve is synthetic — built analytically from the standard OB-wind / WR /
+SN physics components — and is not a replacement for a real SB99 `.dat` file.
+The CLI is happy to simplify the real output directly (`python simplify.py
+quanta1.dat`); `--randomSB99` is just a self-contained demo so the repo stays
+dependency-free.
+
 ## Quick start
 
 ```bash
@@ -45,6 +72,7 @@ python simplify.py --random --metrics                          # error table
 python simplify.py --random --plot                             # comparison plot
 python simplify.py --random --animate demo.gif --r2-target 0.95  # tighter fit
 python simplify.py --random --no-noise --animate clean.gif     # deterministic curve
+python simplify.py --randomSB99 --animate sb99.gif --r2-target 0.99  # log-y demo
 ```
 
 ## Command line
