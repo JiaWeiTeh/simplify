@@ -80,6 +80,7 @@ python simplify.py data.csv -o reduced.csv                    # basic
 python simplify.py data.csv --metrics --plot                   # inspect quality
 python simplify.py data.csv --r2-target 0.95                   # tighter R² target
 python simplify.py data.csv --r2-target 0.8                    # aggressive compression
+python simplify.py data.csv --max-err 0.1                      # bound worst-case error
 python simplify.py data.csv --animate output.gif               # animation
 python simplify.py data.csv --grad-inc 0.5                     # lower curvature threshold
 ```
@@ -103,6 +104,9 @@ x_s, y_s = _simplify(x, y, r2_target=0.99)
 
 # Keep all feature-detected points (no R² thinning)
 x_s, y_s = _simplify(x, y, r2_target=None)
+
+# Bound the worst-case pointwise error
+x_s, y_s = _simplify(x, y, max_err=0.1)
 
 # Error metrics
 metrics = _simplify_error(x, y, x_s, y_s)
@@ -167,6 +171,15 @@ removes points that lie on the line between their neighbours:
    3-in-a-row stability check picks the smallest `k` for which
    `mandatory ∪ bisection[:k]` reaches `r2_target`.
 
+5b. **Greedy max-error reduction** — R² is a global average, so a
+   large local error can hide behind a high R² value (e.g. 0.64 dex
+   worst-case at R² = 0.998).  When `max_err` is set, a greedy loop
+   runs after R²-thinning: at each iteration it finds the original
+   data point with the largest interpolation error and inserts it
+   into the retained set, repeating until the worst-case absolute
+   error drops below `max_err`.  Points inserted by this loop are
+   protected from the subsequent collinearity prune.
+
 6. **Collinearity prune** — a vectorised sweep drops any point whose
    y value is within 0.1 % of the y-range of the chord between its
    two surviving neighbours. Endpoints and mandatory extrema are
@@ -180,6 +193,7 @@ removes points that lie on the line between their neighbours:
 | `nmin` | 100 | Target minimum output samples for distance sampling |
 | `grad_inc` | 1.0 | Bend sensitivity (dimensionless, scale-invariant); fires when Menger curvature in normalised coords > `grad_inc`, or turning angle > `0.1 * grad_inc` rad |
 | `r2_target` | 0.9 | Target R²; set to `None` to keep all detected points |
+| `max_err` | `None` | Maximum allowed absolute interpolation error.  After R²-thinning, a greedy loop inserts points until the worst-case error drops below this value.  Operates in the same y-space as the pipeline (log10 when `log_y` is active, so `0.1` means ≤ 0.1 dex ≈ 26 % multiplicative). |
 | `log_y` | `"auto"` | Work in log-y space for every internal feature detector and the R² thinning step.  `"auto"` activates when every `y > 0` and `max(y)/min(y) > 100`; pass `True` / `False` to force. |
 | `n_chunks` | 20 | Number of equal-x-width chunks whose nearest feature-pool point is promoted to mandatory (x-uniform coverage floor).  Smaller for aggressive compression on uniformly-busy curves; larger when low-amplitude gradual regions need finer minimum coverage. |
 
