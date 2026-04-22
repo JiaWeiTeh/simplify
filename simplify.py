@@ -404,6 +404,44 @@ def _auto_log_y(y: np.ndarray, log_y) -> bool:
     return float(finite.max()) / y_min > 100.0
 
 
+def _x_uniform_coverage_idx(
+    x: np.ndarray,
+    pool_idx: np.ndarray,
+    n_chunks: int,
+) -> np.ndarray:
+    """
+    Pool indices nearest the centres of ``n_chunks`` equal-x-width chunks.
+
+    Used by the R²-thinning step to guarantee a thin x-uniform skeleton
+    in the mandatory set: global R² is amplitude-weighted, so regions
+    with little y-variance contribute little to ``SS_tot`` and would
+    otherwise be dropped even when the local fit is poor.  Promoting
+    ~``n_chunks`` evenly-spaced pool points to mandatory fixes that.
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Monotonically increasing x-values of the raw curve.
+    pool_idx : np.ndarray
+        Sorted indices into ``x`` naming the feature-pool candidates.
+    n_chunks : int
+        Number of equal-x-width chunks.
+
+    Returns
+    -------
+    np.ndarray
+        Sorted, unique indices into ``x`` (subset of ``pool_idx``).
+    """
+    x_pool = x[pool_idx]
+    centres = np.linspace(x[0], x[-1], n_chunks + 1)
+    centres = 0.5 * (centres[:-1] + centres[1:])
+    ins = np.searchsorted(x_pool, centres)
+    lo = np.clip(ins - 1, 0, x_pool.size - 1)
+    hi = np.minimum(ins, x_pool.size - 1)
+    pick_hi = np.abs(x_pool[hi] - centres) <= np.abs(x_pool[lo] - centres)
+    return np.unique(pool_idx[np.where(pick_hi, hi, lo)])
+
+
 def _simplify(
     x_arr: Union[np.ndarray, Sequence[float]],
     y_arr: Union[np.ndarray, Sequence[float]],
@@ -411,6 +449,7 @@ def _simplify(
     grad_inc: float = 1.0,
     r2_target: float = 0.9,
     log_y: Union[bool, str] = "auto",
+    n_chunks: int = 20,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Heuristic downsampling of a curve y(x) to approximately ``nmin`` points,
@@ -475,6 +514,18 @@ def _simplify(
        spikes do not flicker in and out across neighbouring point
        counts), and extrema below 0.5 % are dropped entirely as noise.
 
+    4b. **X-uniform mandatory coverage** (``n_chunks``)
+       Global R² is amplitude-weighted: a low-amplitude region can be
+       very poorly approximated and barely move R² at all when the
+       big-amplitude features elsewhere already dominate ``SS_tot``.
+       To keep the R²-bisection from starving such regions of points,
+       the x-domain is split into ``n_chunks`` equal-width chunks and
+       the feature-pool point nearest each chunk centre is promoted
+       into the mandatory set alongside the prominent extrema.  This
+       puts a thin x-uniform skeleton on top of the feature pool so
+       every portion of the x-axis is guaranteed at least one
+       retained point, regardless of its contribution to R².
+
     5. **R²-based thinning** (optional, ``r2_target``)
        The remaining feature points are traversed in hierarchical-
        bisection order (endpoints → midpoint → quartiles → …) so that
@@ -538,6 +589,16 @@ def _simplify(
         peak-to-trough ratio exceeds two decades.  The output arrays
         always carry the caller's original ``y`` values at the selected
         indices — only the *internal* computations are log-transformed.
+    n_chunks : int, optional
+        Number of equal-x-width coverage chunks used to promote
+        x-uniform mandatory points into the R²-thinning mandatory
+        set.  Each chunk contributes the feature-pool point nearest
+        its centre, so low-amplitude gradual regions (whose global
+        R² contribution is negligible) still receive at least one
+        retained point.  Default: 20.  Pass a smaller value for more
+        aggressive compression on uniformly-busy curves, larger for
+        tighter x-coverage on curves that mix multi-decade-amplitude
+        features with gradual low-amplitude tails.
 
     Returns
     -------
@@ -833,20 +894,15 @@ def _simplify(
             # Convert to actual data indices via merged[order].
             bisection_pool = merged[order[:count]]
 
-            # Split into MANDATORY (prominent extrema, always kept) and
-            # OPTIONAL (bisection pool minus anything already mandatory).
-            # Every trial subset is  mandatory ∪ optional[:k]  — i.e. the
-            # binary search only varies how many optional points to add;
-            # mandatory points are never removable.  This is a strict
-            # strengthening of "prepend prominent to the pool": there is
-            # no value of k for which a mandatory point is absent.
-            if prominent_idx.size > 0:
-                mandatory = prominent_idx
-                rest_mask = ~np.isin(bisection_pool, mandatory)
-                optional = bisection_pool[rest_mask]
-            else:
-                mandatory = np.array([], dtype=int)
-                optional = bisection_pool
+            # Mandatory set = prominent extrema ∪ x-uniform coverage
+            # skeleton (low-amplitude regions get at least one retained
+            # point even when their contribution to global SS_tot is
+            # negligible — see docstring step 4b).  Points here are
+            # present in every trial subset, so the binary search
+            # below only varies how many optional points to add.
+            coverage_idx = _x_uniform_coverage_idx(x, merged, n_chunks)
+            mandatory = np.unique(np.concatenate([prominent_idx, coverage_idx]))
+            optional = bisection_pool[~np.isin(bisection_pool, mandatory)]
 
             # Helper: compute R² for mandatory ∪ first k of optional.
             def _r2_at(k):
@@ -1185,6 +1241,7 @@ def _simplify_animate(
     title: str = "Curve simplification",
     n_steps: int = 30,
     r2_target: float = 0.9,
+    n_chunks: int = 20,
     xlabel: str = r"$x$",
     ylabel: str = r"$y$",
 ) -> None:
@@ -1294,13 +1351,12 @@ def _simplify_animate(
         queue = nq
     bisection_pool = full_idx[order[:count]]
 
-    if prominent_idx.size > 0:
-        mandatory = prominent_idx
-        rest_mask = ~np.isin(bisection_pool, mandatory)
-        optional = bisection_pool[rest_mask]
-    else:
-        mandatory = np.array([], dtype=int)
-        optional = bisection_pool
+    # Mandatory set mirrors _simplify: prominent extrema ∪ x-uniform
+    # coverage skeleton, so gradual low-amplitude regions keep a
+    # representative point in every animation frame.
+    coverage_idx = _x_uniform_coverage_idx(x_o, full_idx, n_chunks)
+    mandatory = np.unique(np.concatenate([prominent_idx, coverage_idx]))
+    optional = bisection_pool[~np.isin(bisection_pool, mandatory)]
 
     steps = []
     for npts in pt_counts:

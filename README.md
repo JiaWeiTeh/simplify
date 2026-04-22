@@ -6,7 +6,7 @@ extrema, and overall shape. Single file, no dependencies beyond NumPy.
 | Noisy input (default) | Clean input (`--no-noise`) |
 |:---:|:---:|
 | ![Simplification demo with noise](demo.gif) | ![Simplification demo without noise](demo_nonoise.gif) |
-| R² ≥ 0.9 first reached at **n = 40** | R² ≥ 0.9 first reached at **n = 44** |
+| R² ≥ 0.9 first reached at **n = 32** | R² ≥ 0.9 first reached at **n = 57** |
 
 Both animations progressively add points to a 10 000-point random test
 curve and stop once R² ≥ 0.9 (green dashed line in the bottom panel).
@@ -25,17 +25,20 @@ python simplify.py --random --seed 42 --no-noise --animate demo_nonoise.gif --an
 | `R² ≥ 0.9` (default) | `R² ≥ 0.99` (tight) |
 |:---:|:---:|
 | ![Starburst99 5 Myr R²=0.9](demo_sb99_loose.gif) | ![Starburst99 5 Myr R²=0.99](demo_sb99_tight.gif) |
-| 1221 pts → **9** pts (136× compression) | 1221 pts → **16** pts (76× compression) |
+| 1221 pts → **24** pts (51× compression) | 1221 pts → **24** pts (51× compression) |
 
 The curve is the Starburst99 `LOG (TOTAL)` SED column at 5 Myr
 (instantaneous burst, Z = Z☉) — a real astrophysical spectrum spanning
 91 Å to 1.6 × 10⁶ Å in wavelength and ~6 dex in luminosity.  `x` is
 `log10(λ/Å)` and `y` is `log10(L_λ / (erg s⁻¹ Å⁻¹))`; the simplifier
 sees a 1221-point log–log curve with a steep UV bump, a broad
-Balmer/Paschen plateau, and a smooth Rayleigh–Jeans tail.  Nine
-points already reproduce the spectrum at R² ≈ 0.96; sixteen push R²
-past 0.99 and cap the worst-case log deviation at ≈ 0.01 dex (≈ 2.5 %
-multiplicative).  Generated with:
+Balmer/Paschen plateau, and a smooth Rayleigh–Jeans tail.  Twenty-four
+points reproduce the spectrum at R² > 0.998 and cap the worst-case
+log deviation in the gradual ≥ 1 µm tail at ≈ 0.04 dex (≈ 10 %
+multiplicative).  Both targets yield the same point count because
+the x-uniform mandatory coverage (see algorithm step 4b below)
+already exceeds the R² target on this curve — tightening the target
+becomes the binding constraint only past R² ≥ 0.999.  Generated with:
 
 ```bash
 python simplify.py --randomSB99 --animate demo_sb99_loose.gif --animate-duration 6
@@ -146,6 +149,18 @@ removes points that lie on the line between their neighbours:
    never flicker in and out with changing `n`. Extrema below 0.5 % are
    dropped as noise (step 2).
 
+4b. **X-uniform mandatory coverage** — global R² is amplitude-weighted,
+   so a low-amplitude gradual region contributes almost nothing to
+   `SS_tot` and the bisection would happily drop every candidate in it
+   once bigger features already hit the target.  To prevent this, the
+   x-domain is split into `n_chunks = 20` equal-width chunks and the
+   feature-pool point nearest each chunk centre is promoted into the
+   mandatory set alongside the prominent extrema.  This thin x-uniform
+   skeleton guarantees every part of the x-axis gets at least one
+   retained point, independent of amplitude.  On the Starburst99 SED
+   above it cuts the worst-case error in the ≥ 1 µm tail from 0.29 dex
+   to 0.04 dex without increasing the point count.
+
 5. **R²-based thinning** — the remaining candidates are traversed in
    hierarchical bisection order (endpoints → midpoint → quartiles → …)
    so trial subsets are strictly nested. A binary search plus a
@@ -166,6 +181,7 @@ removes points that lie on the line between their neighbours:
 | `grad_inc` | 1.0 | Bend sensitivity (dimensionless, scale-invariant); fires when Menger curvature in normalised coords > `grad_inc`, or turning angle > `0.1 * grad_inc` rad |
 | `r2_target` | 0.9 | Target R²; set to `None` to keep all detected points |
 | `log_y` | `"auto"` | Work in log-y space for every internal feature detector and the R² thinning step.  `"auto"` activates when every `y > 0` and `max(y)/min(y) > 100`; pass `True` / `False` to force. |
+| `n_chunks` | 20 | Number of equal-x-width chunks whose nearest feature-pool point is promoted to mandatory (x-uniform coverage floor).  Smaller for aggressive compression on uniformly-busy curves; larger when low-amplitude gradual regions need finer minimum coverage. |
 
 ## Multi-decade data (density, temperature, flux profiles)
 
