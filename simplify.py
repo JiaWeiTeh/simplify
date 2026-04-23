@@ -448,6 +448,7 @@ def _simplify(
     nmin: int = 100,
     grad_inc: float = 1.0,
     r2_target: float = 0.9,
+    max_err: Union[float, None] = None,
     log_y: Union[bool, str] = "auto",
     n_chunks: int = 20,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -577,6 +578,14 @@ def _simplify(
         active the R² is computed in log-y space, so hitting 0.9 means
         "90 % of the log-decade variance is captured" — the right
         semantics for profiles that span multiple orders of magnitude.
+    max_err : float or None, optional
+        Maximum allowed absolute interpolation error.  After R²-based
+        thinning, a greedy loop inserts the candidate-pool point
+        nearest the location of the worst residual until the
+        worst-case error drops below this value (or the pool is
+        exhausted).  Operates on the same y-space as the rest of the
+        pipeline (log10 y when ``log_y`` is active).  ``None``
+        (default) disables the constraint.
     log_y : bool or "auto", optional
         Work in log-y space for every internal feature detector and for
         the R² thinning step.  This is the recommended mode for
@@ -965,20 +974,35 @@ def _simplify(
             merged = np.sort(np.concatenate([mandatory, optional[:k]]))
 
             # =========================================================
+            # Strategy 5b: greedy max-error reduction (post-R²)
+            # =========================================================
+            maxerr_protected = np.array([], dtype=int)
+            if max_err is not None:
+                pre_size = merged.size
+                in_merged = np.zeros(x.size, dtype=bool)
+                in_merged[merged] = True
+                while True:
+                    y_interp = np.interp(x, x[merged], y[merged])
+                    abs_res = np.abs(y - y_interp)
+                    worst_idx = int(np.argmax(abs_res))
+                    if abs_res[worst_idx] <= max_err:
+                        break
+                    if in_merged[worst_idx]:
+                        break
+                    in_merged[worst_idx] = True
+                    merged = np.sort(np.append(merged, worst_idx))
+                if merged.size > pre_size:
+                    maxerr_protected = np.setdiff1d(merged, mandatory)
+
+            # =========================================================
             # Strategy 6: collinearity prune (post-thinning)
             # =========================================================
-            # The R² bisection treats the merged array as a flat list
-            # of positions and does not notice when an interior
-            # sample lies on the chord between its neighbours — the
-            # canonical over-sampling mode for horizontal or linear
-            # stretches.  _prune_collinear drops those samples in a
-            # vectorised sweep, protecting endpoints and mandatory
-            # extrema.  Only runs when thinning is active: with
-            # ``r2_target is None`` the caller explicitly asked for
-            # every detected feature.
             if merged.size > 2 and y_range > 0:
+                protected = np.unique(np.concatenate(
+                    [mandatory, maxerr_protected]
+                )) if maxerr_protected.size > 0 else mandatory
                 merged = _prune_collinear(
-                    merged, x, y, tol=1e-3 * y_range, protected=mandatory,
+                    merged, x, y, tol=1e-3 * y_range, protected=protected,
                 )
 
     # ``y`` above was the working (optionally log-transformed) signal
@@ -1241,6 +1265,7 @@ def _simplify_animate(
     title: str = "Curve simplification",
     n_steps: int = 30,
     r2_target: float = 0.9,
+    max_err: Union[float, None] = None,
     n_chunks: int = 20,
     xlabel: str = r"$x$",
     ylabel: str = r"$y$",
@@ -1251,11 +1276,14 @@ def _simplify_animate(
     The animation builds the simplified curve up from 5 points to the
     full feature-detected set, using the same mandatory / hierarchical-
     bisection ordering as :func:`_simplify` so that frames are strictly
-    nested (each frame is a superset of the previous one).  Two panels
+    nested (each frame is a superset of the previous one).  Three panels
     are shown:
 
     - **Top panel**: the underlying curve as a thin grey line, with the
       current simplified points overlaid as red dots + line.
+    - **Middle panel**: pointwise absolute residual ``|y - y_interp|``
+      vs x, showing *where* the current approximation is worst.  When
+      ``max_err`` is set a horizontal dashed line marks the threshold.
     - **Bottom panel**: log-log RMSE vs. number of retained points,
       with dashed reference hlines at the RMSE corresponding to
       R² = 0.9, 0.99, 0.999 (equally spaced half-decade rungs), and a
@@ -1367,6 +1395,8 @@ def _simplify_animate(
         k = min(k, len(optional))
         trial = np.sort(np.concatenate([mandatory, optional[:k]]))
         x_s, y_s = x_o[trial], y_o[trial]
+        y_interp = np.interp(x_o, x_s, y_s)
+        abs_res = np.abs(y_o - y_interp)
         m = _simplify_error(x_o, y_o, x_s, y_s)
         steps.append({
             "npts": m["n_simp"],
@@ -1374,6 +1404,8 @@ def _simplify_animate(
             "y": y_s,
             "rms": m["rms_err"],
             "r2": m["r_squared"],
+            "residual": abs_res,
+            "max_err": float(abs_res.max()),
         })
 
     # Deduplicate steps with same npts (can happen when _simplify returns
@@ -1400,15 +1432,15 @@ def _simplify_animate(
     sweep_frames = int(fps * sweep_duration)
 
     # --- Set up figure ---
-    fig, (ax, ax_err) = plt.subplots(
-        2, 1, figsize=(7, 5.5),
-        gridspec_kw={"height_ratios": [3, 1], "hspace": 0.30},
+    fig, (ax, ax_res, ax_err) = plt.subplots(
+        3, 1, figsize=(7, 7.5),
+        gridspec_kw={"height_ratios": [3, 1, 1], "hspace": 0.35},
     )
     margin = 0.05 * (np.nanmax(y_o) - np.nanmin(y_o) + 1e-30)
     ax.set_xlim(x_o[0], x_o[-1])
     ax.set_ylim(np.nanmin(y_o) - margin, np.nanmax(y_o) + margin)
     ax.set_ylabel(ylabel)
-    ax.set_xlabel(xlabel)
+    ax.tick_params(labelbottom=False)
     ax.set_title(title)
 
     # Thin underlying curve (always visible).
@@ -1424,12 +1456,22 @@ def _simplify_animate(
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", alpha=0.9),
     )
 
+    # --- Residual subplot: |y - y_interp| vs x ---
+    all_max_errs = np.array([s["max_err"] for s in steps])
+    res_ceil = float(np.max(all_max_errs)) * 1.2
+    ax_res.set_xlim(x_o[0], x_o[-1])
+    ax_res.set_ylim(0, max(res_ceil, 1e-10))
+    ax_res.set_xlabel(xlabel)
+    ax_res.set_ylabel(r"$|y - y_{\mathrm{interp}}|$")
+    if max_err is not None:
+        ax_res.axhline(max_err, color="tab:green", ls="--", lw=1.0,
+                       alpha=0.8, label=f"max_err = {max_err:g}")
+        ax_res.legend(loc="upper right", fontsize=8)
+    res_fill = ax_res.fill_between(x_o, 0, np.zeros_like(x_o),
+                                   color="tab:orange", alpha=0.4)
+    res_line, = ax_res.plot([], [], "-", color="tab:orange", lw=0.6)
+
     # --- Error subplot: log-RMSE vs n_points (log-log) ---
-    # RMSE = sigma_y * sqrt(1 - R^2) where sigma_y is the population
-    # standard deviation of y_o, so fixed R^2 thresholds map to fixed
-    # RMSE levels on the log y-axis — equally spaced half-decade
-    # reference lines at R^2 = 0.9, 0.99, 0.999 form a visual ladder
-    # showing how close the simplification is to perfect reconstruction.
     sigma_y = float(np.sqrt(np.mean((y_o - np.mean(y_o)) ** 2)))
     r2_levels = (0.9, 0.99, 0.999)
     rms_levels = [sigma_y * np.sqrt(1.0 - r) for r in r2_levels]
@@ -1480,6 +1522,7 @@ def _simplify_animate(
                                 edgecolors="black", linewidths=0.5)
 
     def _update(frame):
+        nonlocal res_fill
         if frame < sweep_frames:
             # Map frame to step index.
             step_idx = int(frame / max(sweep_frames - 1, 1) * (n_anim_steps - 1))
@@ -1495,8 +1538,15 @@ def _simplify_animate(
         scatter_simp.set_offsets(np.column_stack([s["x"], s["y"]]))
         info_text.set_text(
             f"$n = {s['npts']}$    "
-            f"$R^2 = {s['r2']:.6f}$"
+            f"$R^2 = {s['r2']:.6f}$    "
+            f"max $|\\Delta y| = {s['max_err']:.4f}$"
         )
+
+        # --- Middle panel: update residual ---
+        res_fill.remove()
+        res_fill = ax_res.fill_between(x_o, 0, s["residual"],
+                                       color="tab:orange", alpha=0.4)
+        res_line.set_data(x_o, s["residual"])
 
         # --- Bottom panel: build up error curve ---
         # Show all steps up to current.
@@ -1506,7 +1556,7 @@ def _simplify_animate(
         # Highlight current point.
         err_marker.set_offsets([[s["npts"], s["rms"]]])
 
-        return line_simp, scatter_simp, info_text, err_line, err_marker
+        return line_simp, scatter_simp, info_text, res_fill, res_line, err_line, err_marker
 
 
     anim = FuncAnimation(fig, _update, frames=n_frames, blit=False)
@@ -1827,6 +1877,14 @@ def _simplify_cli():
              "R² reaches this value.  Use None to keep all detected points.",
     )
     parser.add_argument(
+        "--max-err",
+        type=float,
+        default=None,
+        help="Maximum allowed absolute interpolation error.  After R²-based "
+             "thinning, a greedy loop inserts points until the worst-case "
+             "error drops below this value.  Default: None (no constraint).",
+    )
+    parser.add_argument(
         "--log-y",
         choices=("auto", "on", "off"),
         default="auto",
@@ -1926,7 +1984,7 @@ def _simplify_cli():
     log_y_arg = {"auto": "auto", "on": True, "off": False}[args.log_y]
     x_out, y_out = _simplify(
         x, y, nmin=args.nmin, grad_inc=args.grad_inc,
-        r2_target=args.r2_target, log_y=log_y_arg,
+        r2_target=args.r2_target, max_err=args.max_err, log_y=log_y_arg,
     )
 
     # --- Write output ---
@@ -1985,6 +2043,7 @@ def _simplify_cli():
             duration=args.animate_duration,
             title=f"Simplification of {source_label}",
             r2_target=args.r2_target,
+            max_err=args.max_err,
             **anim_kwargs,
         )
 
