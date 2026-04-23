@@ -464,11 +464,12 @@ def _simplify(
     ------------------
     Three independent strategies select "important" indices, which are
     merged together with the two endpoints into a pool of feature points.
-    A prominence-based filter then marks a subset as mandatory, the
-    R²-based thinning step chooses the smallest subset that meets the
-    requested quality target, and a final collinearity pass prunes
-    points that lie on the line between their neighbours (the main
-    reason horizontal / linear stretches were previously over-sampled).
+    A prominence-based filter marks the visually important extrema as
+    mandatory, x-uniform coverage prevents amplitude-biased starvation,
+    the R²-based thinning step chooses the smallest subset that meets
+    the quality target, a greedy max-error loop (when enabled) bounds
+    the worst-case pointwise error, and a collinearity pass prunes
+    points that lie on the line between their neighbours.
 
     When ``log_y`` is active (and it auto-activates on strictly positive
     inputs spanning ≥ 2 decades) every stage below operates on
@@ -535,6 +536,14 @@ def _simplify(
        ``k`` for which the trial  ``mandatory ∪ bisection[:k]``
        achieves ``R² ≥ r2_target``.
 
+    5b. **Greedy max-error reduction** (optional, ``max_err``)
+       R² is a global average: a 0.64 dex local error can hide behind
+       R² = 0.998.  When ``max_err`` is set, a greedy loop finds the
+       original data point with the largest interpolation error and
+       inserts it into the retained set, repeating until the worst-case
+       absolute error drops below ``max_err``.  Points inserted by this
+       loop are protected from the subsequent collinearity prune.
+
     6. **Collinearity prune** (post-thinning)
        A vectorised sweep drops any point whose y value is within
        0.1 % of the y-range of the chord between its two surviving
@@ -580,10 +589,10 @@ def _simplify(
         semantics for profiles that span multiple orders of magnitude.
     max_err : float or None, optional
         Maximum allowed absolute interpolation error.  After R²-based
-        thinning, a greedy loop inserts the candidate-pool point
-        nearest the location of the worst residual until the
-        worst-case error drops below this value (or the pool is
-        exhausted).  Operates on the same y-space as the rest of the
+        thinning, a greedy loop finds the original data point with the
+        largest interpolation error and inserts it into the retained
+        set, repeating until the worst-case error drops below this
+        value.  Operates on the same y-space as the rest of the
         pipeline (log10 y when ``log_y`` is active).  ``None``
         (default) disables the constraint.
     log_y : bool or "auto", optional
@@ -709,7 +718,7 @@ def _simplify(
     y = np.log10(y_raw) if use_log else y_raw
     # If the array is already short enough, return as-is.
     if nmin >= x.size:
-        return x, y
+        return x, y_raw
     # Enforce a floor of 100 samples so the output is always useful.
     nmin = max(int(nmin), 100)
 
@@ -976,9 +985,9 @@ def _simplify(
             # =========================================================
             # Strategy 5b: greedy max-error reduction (post-R²)
             # =========================================================
-            maxerr_protected = np.array([], dtype=int)
+            maxerr_inserted = np.array([], dtype=int)
             if max_err is not None:
-                pre_size = merged.size
+                pre_merged = merged.copy()
                 in_merged = np.zeros(x.size, dtype=bool)
                 in_merged[merged] = True
                 while True:
@@ -991,16 +1000,15 @@ def _simplify(
                         break
                     in_merged[worst_idx] = True
                     merged = np.sort(np.append(merged, worst_idx))
-                if merged.size > pre_size:
-                    maxerr_protected = np.setdiff1d(merged, mandatory)
+                maxerr_inserted = np.setdiff1d(merged, pre_merged)
 
             # =========================================================
             # Strategy 6: collinearity prune (post-thinning)
             # =========================================================
             if merged.size > 2 and y_range > 0:
                 protected = np.unique(np.concatenate(
-                    [mandatory, maxerr_protected]
-                )) if maxerr_protected.size > 0 else mandatory
+                    [mandatory, maxerr_inserted]
+                )) if maxerr_inserted.size > 0 else mandatory
                 merged = _prune_collinear(
                     merged, x, y, tol=1e-3 * y_range, protected=protected,
                 )
@@ -1281,9 +1289,9 @@ def _simplify_animate(
 
     - **Top panel**: the underlying curve as a thin grey line, with the
       current simplified points overlaid as red dots + line.
-    - **Middle panel**: pointwise absolute residual ``|y - y_interp|``
-      vs x, showing *where* the current approximation is worst.  When
-      ``max_err`` is set a horizontal dashed line marks the threshold.
+    - **Middle panel**: signed residual ``y - y_interp`` vs x, showing
+      *where* and in which direction the approximation deviates.  When
+      ``max_err`` is set, horizontal dashed lines mark the ± threshold.
     - **Bottom panel**: log-log RMSE vs. number of retained points,
       with dashed reference hlines at the RMSE corresponding to
       R² = 0.9, 0.99, 0.999 (equally spaced half-decade rungs), and a
@@ -1396,7 +1404,7 @@ def _simplify_animate(
         trial = np.sort(np.concatenate([mandatory, optional[:k]]))
         x_s, y_s = x_o[trial], y_o[trial]
         y_interp = np.interp(x_o, x_s, y_s)
-        abs_res = np.abs(y_o - y_interp)
+        residual = y_o - y_interp
         m = _simplify_error(x_o, y_o, x_s, y_s)
         steps.append({
             "npts": m["n_simp"],
@@ -1404,8 +1412,8 @@ def _simplify_animate(
             "y": y_s,
             "rms": m["rms_err"],
             "r2": m["r_squared"],
-            "residual": abs_res,
-            "max_err": float(abs_res.max()),
+            "residual": residual,
+            "max_err": float(np.abs(residual).max()),
         })
 
     # Deduplicate steps with same npts (can happen when _simplify returns
@@ -1456,16 +1464,19 @@ def _simplify_animate(
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", alpha=0.9),
     )
 
-    # --- Residual subplot: |y - y_interp| vs x ---
+    # --- Residual subplot: (y - y_interp) vs x ---
     all_max_errs = np.array([s["max_err"] for s in steps])
     res_ceil = float(np.max(all_max_errs)) * 1.2
     ax_res.set_xlim(x_o[0], x_o[-1])
-    ax_res.set_ylim(0, max(res_ceil, 1e-10))
+    ax_res.set_ylim(-res_ceil, res_ceil)
     ax_res.set_xlabel(xlabel)
-    ax_res.set_ylabel(r"$|y - y_{\mathrm{interp}}|$")
+    ax_res.set_ylabel(r"$y - y_{\mathrm{interp}}$")
+    ax_res.axhline(0, color="0.5", ls="-", lw=0.4)
     if max_err is not None:
         ax_res.axhline(max_err, color="tab:green", ls="--", lw=1.0,
-                       alpha=0.8, label=f"max_err = {max_err:g}")
+                       alpha=0.8, label=rf"$\pm\,${max_err:g}")
+        ax_res.axhline(-max_err, color="tab:green", ls="--", lw=1.0,
+                       alpha=0.8)
         ax_res.legend(loc="upper right", fontsize=8)
     res_fill = ax_res.fill_between(x_o, 0, np.zeros_like(x_o),
                                    color="tab:orange", alpha=0.4)
@@ -1766,7 +1777,7 @@ def _simplify_cli():
     --nmin : int
         Minimum number of output samples (default: 100).
     --grad-inc : float
-        Menger curvature threshold (default: 1.0, units: 1/length).
+        Bend sensitivity (default: 1.0, dimensionless in normalised coords).
     --metrics : flag
         Print error metrics (RMSE, MAE, R², etc.) after simplification.
     --plot : flag
@@ -1792,17 +1803,17 @@ def _simplify_cli():
         epilog=(
             "Example:\n"
             "  python simplify.py data.csv -o reduced.csv --nmin 200\n\n"
-            "The algorithm combines six stages:\n"
-            "  1. Scale-invariant bend detection -- Menger curvature plus\n"
-            "     turning angle in normalised coords, both gated by --grad-inc\n"
-            "  2. Sign-change detection -- keeps local extrema, noise-filtered\n"
-            "  3. Cumulative-distance sampling -- uniform arc-length in y\n"
-            "  4. Topological-persistence filter -- marks prominent extrema\n"
-            "     as mandatory so big features never flicker in and out\n"
-            "  5. R²-based thinning -- galloping + binary search picks the\n"
-            "     smallest subset meeting --r2-target\n"
-            "  6. Collinearity prune -- drops interior points that lie on\n"
-            "     the chord between their neighbours"
+            "The algorithm combines eight stages:\n"
+            "  1.  Scale-invariant bend detection (Menger curvature +\n"
+            "      turning angle in normalised coords, gated by --grad-inc)\n"
+            "  2.  Sign-change detection (local extrema, noise-filtered)\n"
+            "  3.  Cumulative-distance sampling (uniform arc-length in y)\n"
+            "  4.  Topological-persistence filter (mandatory prominent extrema)\n"
+            "  4b. X-uniform mandatory coverage (--n-chunks even-x skeleton)\n"
+            "  5.  R²-based thinning (galloping + binary search to --r2-target)\n"
+            "  5b. Greedy max-error reduction (--max-err worst-case bound)\n"
+            "  6.  Collinearity prune (drops points on the chord between\n"
+            "      their neighbours)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
