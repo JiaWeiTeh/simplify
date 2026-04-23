@@ -1281,9 +1281,9 @@ def _simplify_animate(
 
     - **Top panel**: the underlying curve as a thin grey line, with the
       current simplified points overlaid as red dots + line.
-    - **Middle panel**: pointwise absolute residual ``|y - y_interp|``
-      vs x, showing *where* the current approximation is worst.  When
-      ``max_err`` is set a horizontal dashed line marks the threshold.
+    - **Middle panel**: signed residual ``y - y_interp`` vs x, showing
+      *where* and in which direction the approximation deviates.  When
+      ``max_err`` is set, horizontal dashed lines mark the ± threshold.
     - **Bottom panel**: log-log RMSE vs. number of retained points,
       with dashed reference hlines at the RMSE corresponding to
       R² = 0.9, 0.99, 0.999 (equally spaced half-decade rungs), and a
@@ -1396,7 +1396,7 @@ def _simplify_animate(
         trial = np.sort(np.concatenate([mandatory, optional[:k]]))
         x_s, y_s = x_o[trial], y_o[trial]
         y_interp = np.interp(x_o, x_s, y_s)
-        abs_res = np.abs(y_o - y_interp)
+        residual = y_o - y_interp
         m = _simplify_error(x_o, y_o, x_s, y_s)
         steps.append({
             "npts": m["n_simp"],
@@ -1404,8 +1404,8 @@ def _simplify_animate(
             "y": y_s,
             "rms": m["rms_err"],
             "r2": m["r_squared"],
-            "residual": abs_res,
-            "max_err": float(abs_res.max()),
+            "residual": residual,
+            "max_err": float(np.abs(residual).max()),
         })
 
     # Deduplicate steps with same npts (can happen when _simplify returns
@@ -1456,16 +1456,19 @@ def _simplify_animate(
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", alpha=0.9),
     )
 
-    # --- Residual subplot: |y - y_interp| vs x ---
+    # --- Residual subplot: (y - y_interp) vs x ---
     all_max_errs = np.array([s["max_err"] for s in steps])
     res_ceil = float(np.max(all_max_errs)) * 1.2
     ax_res.set_xlim(x_o[0], x_o[-1])
-    ax_res.set_ylim(0, max(res_ceil, 1e-10))
+    ax_res.set_ylim(-res_ceil, res_ceil)
     ax_res.set_xlabel(xlabel)
-    ax_res.set_ylabel(r"$|y - y_{\mathrm{interp}}|$")
+    ax_res.set_ylabel(r"$y - y_{\mathrm{interp}}$")
+    ax_res.axhline(0, color="0.5", ls="-", lw=0.4)
     if max_err is not None:
         ax_res.axhline(max_err, color="tab:green", ls="--", lw=1.0,
-                       alpha=0.8, label=f"max_err = {max_err:g}")
+                       alpha=0.8, label=rf"$\pm\,${max_err:g}")
+        ax_res.axhline(-max_err, color="tab:green", ls="--", lw=1.0,
+                       alpha=0.8)
         ax_res.legend(loc="upper right", fontsize=8)
     res_fill = ax_res.fill_between(x_o, 0, np.zeros_like(x_o),
                                    color="tab:orange", alpha=0.4)
