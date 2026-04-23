@@ -3,63 +3,46 @@
 Heuristic downsampling of 1-D curves while preserving sharp bends, local
 extrema, and overall shape. Single file, no dependencies beyond NumPy.
 
-| Noisy input (default) | Clean input (`--no-noise`) |
-|:---:|:---:|
-| ![Simplification demo with noise](demo.gif) | ![Simplification demo without noise](demo_nonoise.gif) |
-| R² ≥ 0.9 first reached at **n = 32** | R² ≥ 0.9 first reached at **n = 57** |
+![Simplification demo](demo_nonoise.gif)
 
-Both animations progressively add points to a 10 000-point random test
-curve and stop once R² ≥ 0.9 (green dashed line in the bottom panel).
-The bottom panel shows RMSE on a log-log scale with dashed reference
-lines at R² = 0.9, 0.99, 0.999.
-
-Generated with:
+The animation progressively adds points to a 10 000-point random test
+curve (seed 42, no noise).  Three panels: the simplified overlay (top),
+the signed residual showing where the approximation over-/undershoots
+(middle), and RMSE vs point count on a log-log scale (bottom).  R² ≥ 0.9
+is first reached at **n = 57** (green dashed line).  Generated with:
 
 ```bash
-python simplify.py --random --seed 42 --animate demo.gif --animate-duration 5
 python simplify.py --random --seed 42 --no-noise --animate demo_nonoise.gif --animate-duration 5
 ```
 
 ### Real data — Starburst99 5 Myr SED
 
-| `R² ≥ 0.9` (default) | `R² ≥ 0.99` (tight) |
+| `R² ≥ 0.999` | `R² ≥ 0.999` + `max_err = 0.05` |
 |:---:|:---:|
-| ![Starburst99 5 Myr R²=0.9](demo_sb99_loose.gif) | ![Starburst99 5 Myr R²=0.99](demo_sb99_tight.gif) |
-| 1221 pts → **24** pts (51× compression) | 1221 pts → **24** pts (51× compression) |
+| ![Starburst99 R²=0.999](demo_sb99_loose.gif) | ![Starburst99 R²=0.999 + max_err](demo_sb99_tight.gif) |
+| 1221 pts → **38** pts (32× compression) | 1221 pts → **105** pts (12× compression) |
 
 The curve is the Starburst99 `LOG (TOTAL)` SED column at 5 Myr
 (instantaneous burst, Z = Z☉) — a real astrophysical spectrum spanning
 91 Å to 1.6 × 10⁶ Å in wavelength and ~6 dex in luminosity.  `x` is
-`log10(λ/Å)` and `y` is `log10(L_λ / (erg s⁻¹ Å⁻¹))`; the simplifier
-sees a 1221-point log–log curve with a steep UV bump, a broad
-Balmer/Paschen plateau, and a smooth Rayleigh–Jeans tail.  Twenty-four
-points reproduce the spectrum at R² > 0.998 and cap the worst-case
-log deviation in the gradual ≥ 1 µm tail at ≈ 0.04 dex (≈ 10 %
-multiplicative).  Both targets yield the same point count because
-the x-uniform mandatory coverage (see algorithm step 4b below)
-already exceeds the R² target on this curve — tightening the target
-becomes the binding constraint only past R² ≥ 0.999.  Generated with:
+`log10(λ/Å)` and `y` is `log10(L_λ / (erg s⁻¹ Å⁻¹))`.  The left GIF
+uses only the R² target: 38 points achieve R² > 0.999, but the
+worst-case error in the UV bump is still 0.51 dex (3.2×).  The
+residual panel makes this immediately visible — R² is a global
+average and hides large local errors.  The right GIF adds
+`max_err = 0.05`, which inserts points at the worst-error locations
+until no point deviates by more than 0.05 dex (≈ 12 %), yielding 105
+points.  Generated with:
 
 ```bash
-python simplify.py --randomSB99 --animate demo_sb99_loose.gif --animate-duration 6
-python simplify.py --randomSB99 --animate demo_sb99_tight.gif --animate-duration 6 --r2-target 0.99
+python simplify.py --randomSB99 --animate demo_sb99_loose.gif --animate-duration 6 --r2-target 0.999
+python simplify.py --randomSB99 --animate demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05
 ```
-
-The `--no-noise` flag drops the 0.1 %-amplitude Gaussian jitter that
-the random test curve otherwise adds.  With noise off the input is a
-deterministic sum of sinusoids, plateaus, spikes and step
-discontinuities — the sign-change detector fires only on real
-features rather than on every adjacent-sample noise flip, so the
-feature pool shrinks substantially (≈ 5 700 pts vs ≈ 9 900 pts for
-this seed) and the R²-thinning step has less material to sift through.
-Visually the difference is most obvious in the top panel: the noisy
-run's simplified curve tracks the jittery signal, while the clean run
-tracks a smoother underlying shape.
 
 ## Quick start
 
 ```bash
-python simplify.py --random --animate simplify.gif
+python simplify.py --random --no-noise --animate simplify.gif
 ```
 
 Generates a synthetic test curve and an animated GIF of the
@@ -69,8 +52,8 @@ simplification process. Other quick demos:
 python simplify.py --random --metrics                          # error table
 python simplify.py --random --plot                             # comparison plot
 python simplify.py --random --animate demo.gif --r2-target 0.95  # tighter fit
-python simplify.py --random --no-noise --animate clean.gif     # deterministic curve
-python simplify.py --randomSB99 --animate sb99.gif --r2-target 0.99  # real SED data
+python simplify.py --randomSB99 --animate sb99.gif --r2-target 0.999  # real SED data
+python simplify.py --randomSB99 --max-err 0.05 --animate sb99_tight.gif  # bounded error
 ```
 
 ## Command line
@@ -121,8 +104,9 @@ _simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 Three independent feature detectors populate a candidate pool, a
 topological-persistence filter promotes the visually important extrema
 to a mandatory set, an R²-driven binary search picks the smallest
-subset that meets the quality target, and a final collinearity pass
-removes points that lie on the line between their neighbours:
+subset that meets the quality target, an optional greedy loop bounds
+the worst-case pointwise error, and a final collinearity pass removes
+points that lie on the line between their neighbours:
 
 1. **Scale-invariant bend detection** — both the discrete Menger
    curvature and the turning angle between adjacent segments are
@@ -161,9 +145,7 @@ removes points that lie on the line between their neighbours:
    feature-pool point nearest each chunk centre is promoted into the
    mandatory set alongside the prominent extrema.  This thin x-uniform
    skeleton guarantees every part of the x-axis gets at least one
-   retained point, independent of amplitude.  On the Starburst99 SED
-   above it cuts the worst-case error in the ≥ 1 µm tail from 0.29 dex
-   to 0.04 dex without increasing the point count.
+   retained point, independent of amplitude.
 
 5. **R²-based thinning** — the remaining candidates are traversed in
    hierarchical bisection order (endpoints → midpoint → quartiles → …)
