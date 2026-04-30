@@ -153,8 +153,7 @@ def _peak_prominences(y: np.ndarray, idx: np.ndarray) -> np.ndarray:
     strictly-less indices, two sparse tables give O(1) range-min /
     range-max queries, and all per-candidate work is vectorised.
     The monotonic-stack step runs in Python and is the dominant cost
-    on very large inputs; callers should skip this routine entirely
-    when its output is not needed (e.g. via ``r2_target is None``).
+    on very large inputs.
 
     Parameters
     ----------
@@ -261,12 +260,10 @@ def _prune_collinear(
 
     Rationale
     ---------
-    After R² thinning, the hierarchical-bisection sampler can still
-    leave points that interpolate to themselves from their neighbours —
-    most often on long horizontal or linear stretches.  Such points
-    carry no reconstructive information and are safe to remove.  This
-    pass is the primary reason the output no longer over-populates
-    straight segments.
+    The feature pool can contain points that interpolate to themselves
+    from their neighbours — most often on long horizontal or linear
+    stretches.  Such points carry no reconstructive information and
+    are safe to remove.
 
     Implementation
     --------------
@@ -415,11 +412,9 @@ def _x_uniform_coverage_idx(
     """
     Pool indices nearest the centres of ``n_chunks`` equal-x-width chunks.
 
-    Used by the R²-thinning step to guarantee a thin x-uniform skeleton
-    in the mandatory set: global R² is amplitude-weighted, so regions
-    with little y-variance contribute little to ``SS_tot`` and would
-    otherwise be dropped even when the local fit is poor.  Promoting
-    ~``n_chunks`` evenly-spaced pool points to mandatory fixes that.
+    Guarantee a thin x-uniform skeleton in the mandatory set so that
+    every part of the x-domain keeps at least one retained point
+    regardless of how the arc-length budget is distributed.
 
     Parameters
     ----------
@@ -1175,7 +1170,6 @@ def _simplify_animate(
     n_steps: int = 30,
     r2_target: float = 0.9,
     max_err: Union[float, None] = None,
-    n_chunks: int = 20,
     xlabel: str = r"$x$",
     ylabel: str = r"$y$",
 ) -> None:
@@ -1195,9 +1189,8 @@ def _simplify_animate(
       ``max_err`` is set, horizontal dashed lines mark the ± threshold.
     - **Bottom panel**: log-log RMSE vs. number of retained points,
       with dashed reference hlines at the RMSE corresponding to
-      R² = 0.9, 0.99, 0.999 (equally spaced half-decade rungs), and a
-      persistent vertical line at the ``n`` where ``r2_target`` is
-      first reached.
+      R² = 0.9, 0.99, 0.999, and a persistent vertical line at the
+      ``n`` where ``r2_target`` is first reached.
 
     Parameters
     ----------
@@ -1217,9 +1210,9 @@ def _simplify_animate(
         log-spaced from 5 up to the total number of feature points.
         Default: 30.
     r2_target : float, optional
-        Quality target used to mark the vertical "R² reached" line in
-        the bottom panel.  Does not affect which frames are rendered.
-        Default: 0.9.
+        R² reference level drawn as a vertical line in the bottom
+        panel (purely cosmetic — does not affect which frames are
+        rendered or how ``_simplify`` selects points).  Default: 0.9.
 
     Examples
     --------
@@ -1238,7 +1231,6 @@ def _simplify_animate(
 
     # --- Precompute simplification at increasing point counts ---
     # Start from 5 points and build up to the full feature-detected set.
-    # First get all feature-detected indices (no R² thinning).
     x_full, y_full = _simplify(x_o, y_o, warn_below_r2=None)
     n_full = x_full.size
 
@@ -1250,14 +1242,13 @@ def _simplify_animate(
     pt_counts = np.unique(np.concatenate([[5], pt_counts, [n_full]]))
     pt_counts = np.sort(pt_counts)  # ascending: few → many
 
-    # Build each simplification level using the same mandatory/optional
-    # split _simplify uses internally: prominent extrema are mandatory
+    # Build each simplification level: prominent extrema are mandatory
     # (always present, even at the smallest frame), and the remaining
     # feature-detected indices are added in hierarchical-bisection order.
     full_idx = np.sort(np.searchsorted(x_o, x_full))
 
-    # Identify topologically persistent extrema (mandatory set) using
-    # the same prominence-threshold rule as _simplify.
+    # Prominent extrema form the mandatory set (same 5%-of-y-range
+    # rule as _simplify).
     grad_o = np.gradient(y_o)
     sign_idx = np.where(np.diff(np.sign(grad_o)) != 0)[0]
     y_rng = float(np.nanmax(y_o) - np.nanmin(y_o))
@@ -1288,9 +1279,8 @@ def _simplify_animate(
         queue = nq
     bisection_pool = full_idx[order[:count]]
 
-    # Mandatory set mirrors _simplify: prominent extrema ∪ x-uniform
-    # coverage skeleton, so gradual low-amplitude regions keep a
-    # representative point in every animation frame.
+    # Prominent extrema ∪ x-uniform coverage skeleton, so gradual
+    # low-amplitude regions keep a representative point in every frame.
     coverage_idx = _x_uniform_coverage_idx(x_o, full_idx, _COVERAGE_CHUNKS)
     mandatory = np.unique(np.concatenate([prominent_idx, coverage_idx]))
     optional = bisection_pool[~np.isin(bisection_pool, mandatory)]
@@ -1639,7 +1629,7 @@ def _load_sb99_5myr() -> Tuple[np.ndarray, np.ndarray]:
     Examples
     --------
     >>> x, y = _load_sb99_5myr()
-    >>> x_s, y_s = _simplify(x, y, r2_target=0.99)
+    >>> x_s, y_s = _simplify(x, y)
     """
     data = np.loadtxt(_SB99_5MYR_FILE, comments="#")
     wavelength = data[:, 0]
@@ -1704,17 +1694,18 @@ def _simplify_cli():
         epilog=(
             "Example:\n"
             "  python simplify.py data.csv -o reduced.csv --nmin 200\n\n"
-            "The algorithm combines eight stages:\n"
-            "  1.  Scale-invariant bend detection (Menger curvature +\n"
-            "      turning angle in normalised coords, gated by --grad-inc)\n"
-            "  2.  Sign-change detection (local extrema, noise-filtered)\n"
-            "  3.  Cumulative-distance sampling (uniform arc-length in y)\n"
+            "The algorithm combines six stages:\n"
+            "  1.  Scale-invariant bend detection (Menger curvature\n"
+            "      in normalised coords, gated by --grad-inc)\n"
+            "  2.  Refined sign-change detection (local extrema)\n"
+            "  3.  Arc-length sampling (symmetric in [0,1]² space)\n"
             "  4.  Topological-persistence filter (mandatory prominent extrema)\n"
-            "  4b. X-uniform mandatory coverage (--n-chunks even-x skeleton)\n"
-            "  5.  R²-based thinning (galloping + binary search to --r2-target)\n"
-            "  5b. Greedy max-error reduction (--max-err worst-case bound)\n"
+            "  4b. X-uniform mandatory coverage (even-x skeleton)\n"
+            "  5.  Greedy max-error reduction (--max-err worst-case bound)\n"
             "  6.  Collinearity prune (drops points on the chord between\n"
-            "      their neighbours)"
+            "      their neighbours)\n\n"
+            "R² is computed after simplification and a warning is emitted\n"
+            "if it falls below --r2-target (informational only)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1741,8 +1732,8 @@ def _simplify_cli():
         type=float,
         default=1.0,
         help="Bend sensitivity (dimensionless, scale-invariant).  "
-             "Fires when normalised Menger curvature > grad_inc or turning "
-             "angle > 0.1 * grad_inc rad.  Default: 1.0.",
+             "Fires when normalised Menger curvature > grad_inc.  "
+             "Default: 1.0.",
     )
     parser.add_argument(
         "--metrics",
@@ -1785,28 +1776,39 @@ def _simplify_cli():
         "--r2-target",
         type=float,
         default=0.9,
-        help="Target R² quality (default: 0.9).  Points are added until "
-             "R² reaches this value.  Use None to keep all detected points.",
+        help="R² quality threshold (default: 0.9).  A warning is emitted "
+             "when the output's R² falls below this value (informational "
+             "only — does not change the point selection).  Also used as "
+             "the reference level in the animation's bottom panel.",
     )
     parser.add_argument(
         "--max-err",
         type=float,
         default=None,
-        help="Maximum allowed absolute interpolation error.  After R²-based "
-             "thinning, a greedy loop inserts points until the worst-case "
-             "error drops below this value.  Default: None (no constraint).",
+        help="Maximum allowed absolute interpolation error.  A greedy "
+             "loop inserts original data points at the worst-error "
+             "locations until no point deviates by more than this value.  "
+             "Default: None (no constraint).",
     )
     parser.add_argument(
         "--log-y",
         choices=("auto", "on", "off"),
         default="auto",
         help=(
-            "Work in log-y space for every internal feature detector "
-            "and the R² thinning step.  'auto' (default) switches to "
-            "log when every y > 0 and max(y)/min(y) > 100 — the right "
-            "behaviour for density / temperature / flux profiles.  "
+            "Work in log-y space for every internal feature detector.  "
+            "'auto' (default) switches to log when every y > 0 and "
+            "max(y)/min(y) > 100 — the right behaviour for density / "
+            "temperature / flux profiles.  "
             "Use 'on' to force, 'off' to keep the classic linear path."
         ),
+    )
+    parser.add_argument(
+        "--dedup-tol",
+        type=float,
+        default=1e-6,
+        help="Stagnation tolerance for collapsing near-duplicate "
+             "consecutive samples (common ODE-solver artefact).  "
+             "Set to 0 to disable.  Default: 1e-6.",
     )
     parser.add_argument(
         "--random",
@@ -1896,7 +1898,8 @@ def _simplify_cli():
     log_y_arg = {"auto": "auto", "on": True, "off": False}[args.log_y]
     x_out, y_out = _simplify(
         x, y, nmin=args.nmin, grad_inc=args.grad_inc,
-        warn_below_r2=args.r2_target, max_err=args.max_err, log_y=log_y_arg,
+        warn_below_r2=args.r2_target, max_err=args.max_err,
+        log_y=log_y_arg, dedup_tol=args.dedup_tol,
     )
 
     # --- Write output ---
