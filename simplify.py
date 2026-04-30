@@ -30,6 +30,9 @@ _STYLE_FILE = Path(__file__).parent / "simplify.mplstyle"
 # Bundled Starburst99 SED (instantaneous burst, 5 Myr slice).
 _SB99_5MYR_FILE = Path(__file__).parent / "data" / "sb99_5myr.dat"
 
+# Number of equal-x-width chunks for x-uniform mandatory coverage.
+_COVERAGE_CHUNKS = 20
+
 
 def _prev_next_strict(y: np.ndarray, greater: bool) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -447,10 +450,10 @@ def _simplify(
     y_arr: Union[np.ndarray, Sequence[float]],
     nmin: int = 100,
     grad_inc: float = 1.0,
-    r2_target: float = 0.9,
+    warn_below_r2: Union[float, None] = 0.9,
     max_err: Union[float, None] = None,
     log_y: Union[bool, str] = "auto",
-    n_chunks: int = 20,
+    dedup_tol: float = 1e-6,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Heuristic downsampling of a curve y(x) to approximately ``nmin`` points,
@@ -462,97 +465,94 @@ def _simplify(
 
     Algorithm overview
     ------------------
-    Three independent strategies select "important" indices, which are
-    merged together with the two endpoints into a pool of feature points.
-    A prominence-based filter marks the visually important extrema as
-    mandatory, x-uniform coverage prevents amplitude-biased starvation,
-    the R²-based thinning step chooses the smallest subset that meets
-    the quality target, a greedy max-error loop (when enabled) bounds
-    the worst-case pointwise error, and a collinearity pass prunes
-    points that lie on the line between their neighbours.
+    The input is sorted by x and stagnant runs are collapsed (so
+    ODE-solver output with quasi-duplicate samples doesn't dominate the
+    feature pool).  Three independent strategies then select "important"
+    indices — bend detection, refined sign-change extrema, and
+    arc-length sampling — which are merged together with the two
+    endpoints into a feature pool.  A prominence filter marks the
+    visually important extrema as mandatory and x-uniform coverage
+    promotes one feature-pool point per chunk so low-amplitude regions
+    are never starved.  An optional greedy max-error loop bounds the
+    worst-case pointwise error and a collinearity pass removes points
+    that lie on the chord between their neighbours.  Finally a soft R²
+    check warns when the result falls below ``warn_below_r2``.
 
     When ``log_y`` is active (and it auto-activates on strictly positive
     inputs spanning ≥ 2 decades) every stage below operates on
     ``log10(y)`` instead of raw ``y``.  The only effect on the caller
-    is that each decade contributes equally to the error metrics and
-    to the cumulative-distance sampler, which is the right behaviour
-    for density / temperature / flux profiles.  Output arrays still
-    carry the caller's original ``y`` values.
+    is that each decade contributes equally to the arc-length sampler
+    and to the error metrics, which is the right behaviour for density,
+    temperature, and flux profiles.  Output arrays still carry the
+    caller's original ``y`` values.
 
     1. **Scale-invariant bend detection**
-       Both the exact Menger curvature κ (reciprocal of the
-       circumradius of each consecutive triplet) and the turning
-       angle between successive segments are computed in *normalised*
-       ``(x, y)`` coordinates (both rescaled to ``[0, 1]``).  A point
-       is flagged when either κ > ``grad_inc`` or the turning angle
-       exceeds ``0.1 * grad_inc`` radians.  The two detectors are
-       complementary: curvature is sensitive to tight corners
-       (vertical drops, shocks); the turning angle fires equally on
-       wide, gentle bends that produce a small curvature because
-       their triplet triangles are large.  Running in normalised
-       coordinates makes ``grad_inc`` dimensionless, so the same
-       value works at any axis scale.
+       Menger curvature κ (the reciprocal of the circumradius of each
+       consecutive triplet) is computed in *normalised* ``(x, y)``
+       coordinates — both axes rescaled to ``[0, 1]`` — and a point is
+       flagged when κ > ``grad_inc``.  Running in normalised coordinates
+       makes ``grad_inc`` dimensionless, so the same value works at any
+       axis scale.
 
-    2. **Sign-change detection** (local extrema)
-       Keeps every point where the first derivative changes sign,
-       i.e. every local minimum and maximum of ``y(x)``.  Sub-noise
-       extrema whose prominence is below 0.5 % of the y-range are
-       filtered out so noise-driven sign flips on near-flat regions
-       do not flood the merged pool.
+    2. **Refined sign-change detection** (local extrema)
+       Every point where the first derivative changes sign is a
+       candidate local minimum / maximum.  Because ``np.sign(grad)``
+       flips between consecutive samples, the true extremum lies at one
+       of the two — the refinement picks whichever is more extreme
+       (higher for a max, lower for a min).
 
-    3. **Cumulative-distance sampling** (uniform arc-length in y)
-       The total variation of ``y`` (i.e. ``sum(|diff(y)|)``) is divided
-       into ``nmin`` equal "distance bins".  One point is selected at each
-       bin boundary.  This gives dense sampling where ``y`` changes rapidly
-       and sparse sampling where ``y`` is nearly flat — adapting
-       automatically to the curve shape.
+    3. **Arc-length sampling** (symmetric, axis-equal)
+       The differential arc length ``ds = sqrt((Δx/range_x)² +
+       (Δy/range_y)²)`` is computed in normalised ``[0, 1]²`` coordinates
+       so both axes contribute equally — a long gentle slope receives
+       points proportional to its x-span instead of being starved by
+       the y-only metric ``sum(|Δy|)``.  The cumulative arc length is
+       divided into ``nmin`` equal bins and one point is selected at
+       each bin boundary, giving dense sampling where the curve runs
+       quickly through ``[0, 1]²`` and sparse sampling where it is
+       nearly flat.
 
-    4. **Topological-persistence filter** (mandatory set + noise floor)
+    4. **Topological-persistence filter** (mandatory extrema)
        ``_peak_prominences`` computes the prominence of every local
        extremum (the minimum descent required to reach a strictly
-       higher point) in a single O(n log n) pass and is used for two
-       jobs: extrema whose prominence exceeds 5 % of the y-range are
-       flagged *mandatory* (always retained so deep dips and tall
-       spikes do not flicker in and out across neighbouring point
-       counts), and extrema below 0.5 % are dropped entirely as noise.
+       higher point) in a single O(n log n) pass.  Extrema whose
+       prominence exceeds 5 % of the y-range are flagged *mandatory*
+       and always retained so deep dips and tall spikes never flicker
+       in and out as ``nmin`` changes.
 
-    4b. **X-uniform mandatory coverage** (``n_chunks``)
-       Global R² is amplitude-weighted: a low-amplitude region can be
-       very poorly approximated and barely move R² at all when the
-       big-amplitude features elsewhere already dominate ``SS_tot``.
-       To keep the R²-bisection from starving such regions of points,
-       the x-domain is split into ``n_chunks`` equal-width chunks and
-       the feature-pool point nearest each chunk centre is promoted
-       into the mandatory set alongside the prominent extrema.  This
-       puts a thin x-uniform skeleton on top of the feature pool so
-       every portion of the x-axis is guaranteed at least one
-       retained point, regardless of its contribution to R².
+    4b. **X-uniform mandatory coverage**
+       The x-domain is split into ``_COVERAGE_CHUNKS`` equal-width
+       chunks and the feature-pool point nearest each chunk centre is
+       promoted into the mandatory set alongside the prominent extrema.
+       This thin x-uniform skeleton complements the arc-length sampler:
+       even after the symmetric metric distributes points evenly, very
+       short stretches of curve length per chunk could still produce
+       gaps, and the coverage promotion guarantees every part of the
+       x-axis keeps at least one retained point.
 
-    5. **R²-based thinning** (optional, ``r2_target``)
-       The remaining feature points are traversed in hierarchical-
-       bisection order (endpoints → midpoint → quartiles → …) so that
-       the subset at budget N is always a superset of the subset at
-       N-1.  A binary search plus a stability check picks the smallest
-       ``k`` for which the trial  ``mandatory ∪ bisection[:k]``
-       achieves ``R² ≥ r2_target``.
+    5. **Greedy max-error reduction** (optional, ``max_err``)
+       The arc-length pool gives a balanced output, but the worst-case
+       pointwise error is not bounded.  When ``max_err`` is set, a
+       greedy loop finds the original data point with the largest
+       interpolation error and inserts it into the retained set,
+       repeating until every original sample agrees within ``max_err``.
+       Points inserted by this loop are protected from the subsequent
+       collinearity prune.
 
-    5b. **Greedy max-error reduction** (optional, ``max_err``)
-       R² is a global average: a 0.64 dex local error can hide behind
-       R² = 0.998.  When ``max_err`` is set, a greedy loop finds the
-       original data point with the largest interpolation error and
-       inserts it into the retained set, repeating until the worst-case
-       absolute error drops below ``max_err``.  Points inserted by this
-       loop are protected from the subsequent collinearity prune.
-
-    6. **Collinearity prune** (post-thinning)
+    6. **Collinearity prune**
        A vectorised sweep drops any point whose y value is within
        0.1 % of the y-range of the chord between its two surviving
-       neighbours; endpoints and mandatory extrema are protected.
-       This removes redundant samples the bisector leaves on linear
-       and horizontal segments.  Typically 2–3 sweeps converge.
+       neighbours; endpoints, mandatory extrema, and ``max_err``
+       insertions are protected.  This removes redundant samples on
+       linear and horizontal segments that survive the feature pool.
 
-    For a perfectly flat curve (zero total variation), the algorithm falls
-    back to uniformly spaced indices.
+    The final output's R² (in the working y-space, log when ``log_y``
+    is active) is checked against ``warn_below_r2`` and a
+    ``UserWarning`` is emitted if it falls short — this is informational
+    only and does not change which points are retained.
+
+    For a perfectly flat curve (zero total arc-length), the algorithm
+    falls back to uniformly spaced indices.
 
     Parameters
     ----------
@@ -563,60 +563,54 @@ def _simplify(
         Dependent variable (e.g., temperature, density, flux).
         Must be the same length as ``x_arr``.
     nmin : int, optional
-        Target *minimum* number of output samples.  Acts as the number of
-        bins for the cumulative-distance sampler; the final count may
-        differ after curvature/sign-change/prominence merging and the
-        R² thinning step.  Clamped to >= 100.  Default is 100.
+        Target *minimum* number of output samples.  Acts as the number
+        of bins for the arc-length sampler; the final count may differ
+        after curvature / sign-change / coverage merging, the optional
+        ``max_err`` insertions, and the collinearity prune.  Clamped to
+        >= 100.  Default is 100.
     grad_inc : float, optional
-        Bend-sensitivity threshold, applied in NORMALISED ``(x, y)``
-        coordinates so it is scale-invariant — the same value works
-        equally well for near-vertical drops and for gentle arbitrary
-        slopes regardless of the axes' units.  A point is flagged as
-        "important" when either its Menger curvature exceeds
-        ``grad_inc`` (captures tight corners) or the turning angle
-        between its adjacent segments exceeds ``0.1 * grad_inc``
-        radians (captures wide, shallow bends that a pure curvature
-        test would miss).  Lower values keep more points (more
-        sensitive to bends); higher values keep fewer.  Default is 1.0.
-    r2_target : float, optional
-        Target R² (coefficient of determination).  After the feature
-        detection selects important points, the result is thinned to the
-        minimum number of points that still achieves this R² value.
-        Set to ``None`` to disable R²-based thinning and keep all
-        detected feature points.  Default is 0.9.  When ``log_y`` is
-        active the R² is computed in log-y space, so hitting 0.9 means
-        "90 % of the log-decade variance is captured" — the right
-        semantics for profiles that span multiple orders of magnitude.
+        Bend-sensitivity threshold for Menger curvature κ in NORMALISED
+        ``(x, y)`` coordinates so it is scale-invariant — the same value
+        works equally well for near-vertical drops and gentle slopes
+        regardless of the axes' units.  Lower values keep more points
+        (more sensitive to bends); higher values keep fewer.  Default
+        is 1.0.
+    warn_below_r2 : float or None, optional
+        Soft quality target.  After the simplification finishes, the
+        residual R² of the output (linearly interpolated back onto the
+        original grid) is compared to this value and a ``UserWarning``
+        is emitted if it is lower — purely informational, the output
+        is not changed.  Pass ``None`` to disable the warning.  Default
+        is 0.9.  When ``log_y`` is active the comparison is in log-y
+        space.
     max_err : float or None, optional
-        Maximum allowed absolute interpolation error.  After R²-based
-        thinning, a greedy loop finds the original data point with the
-        largest interpolation error and inserts it into the retained
-        set, repeating until the worst-case error drops below this
-        value.  Operates on the same y-space as the rest of the
-        pipeline (log10 y when ``log_y`` is active).  ``None``
-        (default) disables the constraint.
+        Maximum allowed absolute interpolation error.  When set, a
+        greedy loop after the feature pool is built finds the original
+        data point with the largest interpolation error and inserts it
+        into the retained set, repeating until the worst-case error
+        drops below this value.  Operates on the same y-space as the
+        rest of the pipeline (log10 y when ``log_y`` is active).
+        ``None`` (default) disables the constraint.
     log_y : bool or "auto", optional
         Work in log-y space for every internal feature detector and for
-        the R² thinning step.  This is the recommended mode for
-        physics profiles that span multiple decades (density,
+        the residual / warning computations.  This is the recommended
+        mode for physics profiles that span multiple decades (density,
         temperature, flux) because each decade contributes equally to
-        the error metrics and to the cumulative-distance sampler.
-        Pass ``True`` to force it (errors if any ``y <= 0``), ``False``
-        to keep the classic linear pipeline, or ``"auto"`` (default) to
-        switch to log-y whenever every finite ``y`` is positive and the
+        the arc-length sampler and to the error metrics.  Pass ``True``
+        to force it (errors if any ``y <= 0``), ``False`` to keep the
+        classic linear pipeline, or ``"auto"`` (default) to switch to
+        log-y whenever every finite ``y`` is positive and the
         peak-to-trough ratio exceeds two decades.  The output arrays
         always carry the caller's original ``y`` values at the selected
         indices — only the *internal* computations are log-transformed.
-    n_chunks : int, optional
-        Number of equal-x-width coverage chunks used to promote
-        x-uniform mandatory points into the R²-thinning mandatory
-        set.  Each chunk contributes the feature-pool point nearest
-        its centre, so low-amplitude gradual regions (whose global
-        R² contribution is negligible) still receive at least one
-        retained point.  Default: 20.  Pass a smaller value for more
-        aggressive compression on uniformly-busy curves, larger for
-        tighter x-coverage on curves that mix multi-decade-amplitude
-        features with gradual low-amplitude tails.
+    dedup_tol : float, optional
+        Stagnation tolerance for collapsing near-duplicate consecutive
+        samples (a common ODE-solver artefact).  Two consecutive points
+        are treated as redundant when both ``|Δx| < dedup_tol * (x.max
+        - x.min)`` and ``|Δy| < dedup_tol * (y.max - y.min)``; the
+        second of each such pair is dropped before any feature
+        detection runs.  Default ``1e-6`` — far below any meaningful
+        feature scale.  Set to ``0`` to disable.
 
     Returns
     -------
@@ -696,6 +690,8 @@ def _simplify(
         python simplify.py profile.csv --plot             # interactive plot
         python simplify.py profile.csv --animate out.gif  # animated GIF
     """
+    import warnings
+
     # --- Input validation ---
     x = np.asarray(x_arr, dtype=float)
     y_raw = np.asarray(y_arr, dtype=float)
@@ -709,13 +705,46 @@ def _simplify(
             f"Got {x.size} and {y_raw.size}"
         )
 
+    # --- Sort by x if not already monotone ---
+    # The pipeline (np.interp, the merged-index ordering, and the
+    # collinearity prune all assume x is non-decreasing.  Stable sort
+    # so equal x-values preserve their input order.
+    if x.size > 1 and not np.all(np.diff(x) >= 0):
+        order = np.argsort(x, kind="stable")
+        x = x[order]
+        y_raw = y_raw[order]
+
     # Resolve log-y mode.  ``y`` below is the working signal that every
-    # feature detector, the R² thinning step, and the collinearity
-    # prune operate on — either the caller's raw array or its decimal
-    # logarithm.  The output arrays always carry ``y_raw`` at the
-    # selected indices, so callers never see transformed values.
+    # feature detector and the R² check operate on — either the
+    # caller's raw array or its decimal logarithm.  The output arrays
+    # always carry ``y_raw`` at the selected indices, so callers never
+    # see transformed values.
     use_log = _auto_log_y(y_raw, log_y)
     y = np.log10(y_raw) if use_log else y_raw
+
+    # --- ODE-solver stagnation collapse ---
+    # ODE outputs frequently emit runs of nearly-identical (x, y)
+    # samples around stiff regions; left in place they swamp every
+    # downstream detector with redundant points.  Drop the trailing
+    # member of every consecutive pair where both Δx and Δy are
+    # below ``dedup_tol`` × the global range.  Endpoints stay pinned
+    # so the output still bounds the input.
+    if dedup_tol > 0 and x.size > 2:
+        x_rng_full = float(np.ptp(x)) or 1.0
+        y_rng_full = float(np.ptp(y)) or 1.0
+        stagnant = (
+            (np.abs(np.diff(x)) < dedup_tol * x_rng_full) &
+            (np.abs(np.diff(y)) < dedup_tol * y_rng_full)
+        )
+        if np.any(stagnant):
+            keep = np.ones(x.size, dtype=bool)
+            keep[1:][stagnant] = False
+            keep[0] = True
+            keep[-1] = True
+            x = x[keep]
+            y = y[keep]
+            y_raw = y_raw[keep]
+
     # If the array is already short enough, return as-is.
     if nmin >= x.size:
         return x, y_raw
@@ -723,15 +752,12 @@ def _simplify(
     nmin = max(int(nmin), 100)
 
     # =====================================================================
-    # Strategy 1: Scale-invariant bend detection
+    # Strategy 1: Scale-invariant bend detection (Menger curvature)
     # =====================================================================
-    # Both detectors run in NORMALISED coordinates (x, y rescaled to
-    # [0, 1]) so the threshold is dimensionless — the same ``grad_inc``
-    # value fires equally on a near-vertical drop and on a gentle ramp
-    # of the same turn angle, regardless of the units on the axes.  In
-    # raw coordinates the curvature has units of 1/length, which is
-    # why the pre-normalisation version only reliably caught tiny
-    # triangles (vertical rises / drops).
+    # Curvature runs in NORMALISED coordinates (x, y rescaled to [0, 1])
+    # so the threshold is dimensionless — the same ``grad_inc`` value
+    # fires equally on a near-vertical drop and on a gentle ramp,
+    # regardless of the units on the axes.
     x_min = float(np.nanmin(x))
     y_min = float(np.nanmin(y))
     x_range = float(np.nanmax(x)) - x_min
@@ -741,14 +767,12 @@ def _simplify(
     x_n = (x - x_min) / x_scale
     y_n = (y - y_min) / y_scale
 
-    # Consecutive segment deltas in normalised coords (length n-2 each
-    # after np.diff-of-diff style slicing).
+    # Consecutive segment deltas in normalised coords.
     dx1 = np.diff(x_n[:-1])                        # x[i]   - x[i-1]
     dy1 = np.diff(y_n[:-1])                        # y[i]   - y[i-1]
     dx2 = np.diff(x_n[1:])                         # x[i+1] - x[i]
     dy2 = np.diff(y_n[1:])                         # y[i+1] - y[i]
 
-    # --- Menger curvature κ of each interior triplet --------------------
     # κ = 2·(signed area) / (|a|·|b|·|c|) — the reciprocal of the
     # circumradius of the triangle, so tight corners give large κ.
     cross = dx1 * (dy1 + dy2) - dy1 * (dx1 + dx2)   # 2× signed area
@@ -759,258 +783,135 @@ def _simplify(
     np.maximum(denom, 1e-30, out=denom)             # guard degenerate triplets
     kappa = 2.0 * np.abs(cross) / denom
 
-    # --- Turning angle between incoming and outgoing segments ----------
-    # arctan2(cross, dot) ∈ (-π, π]; the absolute value is the
-    # unsigned direction change.  Purely geometric: it fires on a
-    # wide, gentle bend with the same angle as on a tight corner,
-    # which is precisely the case Menger curvature can miss because
-    # the triplet triangle is large.
-    seg_cross = dx1 * dy2 - dy1 * dx2
-    seg_dot = dx1 * dx2 + dy1 * dy2
-    turning_angle = np.abs(np.arctan2(seg_cross, seg_dot))
+    important_curv = np.where(kappa > grad_inc)[0] + 1   # +1: triplet → mid
 
-    # The angle threshold is tied to ``grad_inc`` so a single knob
-    # controls overall sensitivity.  ``grad_inc = 1`` → curvature
-    # fires on tight corners (κ > 1 ≈ 60° internal angle) while the
-    # angle detector fires on ≥ 0.1 rad ≈ 5.7° bends — together they
-    # cover both extremes of the bend-scale spectrum.
-    angle_thresh = min(0.1 * grad_inc, np.pi)
-    important_curv = np.where(
-        (kappa > grad_inc) | (turning_angle > angle_thresh)
-    )[0] + 1                                        # +1: map triplet idx back
-
-    # Derivative sign flips → every local minimum / maximum of y(x).
-    # np.sign(grad) is -1, 0, or +1; a nonzero diff marks a flip.
+    # =====================================================================
+    # Strategy 2: Refined sign-change extrema
+    # =====================================================================
+    # ``np.sign(grad)`` flips between consecutive samples ``sc`` and
+    # ``sc+1``; the actual local extremum is at whichever has the more
+    # extreme y-value (higher for a max, lower for a min).
     grad = np.gradient(y)
-    important_sign_all = np.where(np.diff(np.sign(grad)) != 0)[0]
+    sc = np.where(np.diff(np.sign(grad)) != 0)[0]
+    if sc.size > 0:
+        sc1 = np.minimum(sc + 1, x.size - 1)
+        is_max_sc = grad[sc] > 0     # gradient was + before flip → local max
+        pick_sc1 = np.where(is_max_sc, y[sc1] > y[sc], y[sc1] < y[sc])
+        important_sign = np.unique(np.where(pick_sc1, sc1, sc))
+    else:
+        important_sign = sc
 
     # ---------------------------------------------------------------
-    # Topological persistence: identify the extrema that are large
-    # enough to be genuine features of the curve (as opposed to
-    # noise-level perturbations).  One sparse-table build feeds two
-    # thresholds:
-    #
-    # * ``prom_thresh`` (5 % of y-range) marks MANDATORY extrema —
-    #   always included in every trial subset, so once a big dip or
-    #   spike is in the output at budget N it is also in the output
-    #   at N+1, N+2, …  This prevents the "dip flickers in at some
-    #   random n" artefact.
-    # * ``noise_thresh`` (0.5 % of y-range) suppresses sub-noise
-    #   sign flips on near-flat stretches, which would otherwise
-    #   flood the merged pool with spurious extrema and cause the
-    #   R²-bisection step to over-populate horizontal regions.
-    #
-    # Both filters are only consumed when R² thinning is active
-    # (``r2_target < 1``); with thinning disabled the caller is asking
-    # for every detected feature, so we keep the O(n log n) prominence
-    # pass off the hot path entirely.
+    # Topological persistence: extrema whose prominence exceeds 5 %
+    # of the y-range are MANDATORY (always retained so big features
+    # never flicker in or out as ``nmin`` changes).  The prominence
+    # pass is O(n log n) but only runs when there are extrema to
+    # filter and the y-range is non-degenerate.
     # ---------------------------------------------------------------
-    prom_thresh = 0.05 * y_range          # 5 % of total y-range
-    noise_thresh = 0.005 * y_range        # 0.5 % noise floor
+    prom_thresh = 0.05 * y_range
     prominent_idx = np.array([], dtype=int)
-    important_sign = important_sign_all
-    if (r2_target is not None and r2_target < 1.0
-            and important_sign_all.size > 0 and y_range > 0):
-        proms_all = _peak_prominences(y, important_sign_all)
-        important_sign = important_sign_all[proms_all >= noise_thresh]
-        prominent_idx = important_sign_all[proms_all >= prom_thresh]
+    if important_sign.size > 0 and y_range > 0:
+        proms_all = _peak_prominences(y, important_sign)
+        prominent_idx = important_sign[proms_all >= prom_thresh]
 
     # =====================================================================
-    # Strategy 3: Cumulative-distance sampling (uniform arc-length in y)
+    # Strategy 3: Arc-length sampling (symmetric in [0, 1]² space)
     # =====================================================================
-    # Total variation of y up to each point — the arc-length measure
-    # that makes sampling density track |dy/dx| automatically.
-    y_cum = np.cumsum(np.abs(np.diff(y)))
-    total_variation = float(y_cum[-1]) if y_cum.size > 0 else 0.0
+    # ``ds = sqrt((Δx/range_x)² + (Δy/range_y)²)`` treats both axes
+    # equally, so a long gentle slope receives points proportional to
+    # its x-span — the y-only ``sum(|Δy|)`` predecessor would have
+    # starved that region and let a high-amplitude bump elsewhere
+    # consume the entire budget.
+    inv_x = 1.0 / x_scale
+    inv_y = 1.0 / y_scale
+    dx_raw = np.diff(x)
+    dy_raw = np.diff(y)
+    ds = np.sqrt((dx_raw * inv_x) ** 2 + (dy_raw * inv_y) ** 2)
+    arc_cum = np.cumsum(ds)
+    total_arc = float(arc_cum[-1]) if arc_cum.size > 0 else 0.0
 
-    if not np.isfinite(total_variation) or total_variation == 0:
-        # Perfectly flat curve (or all NaN): no total variation means
+    if not np.isfinite(total_arc) or total_arc == 0:
+        # Perfectly flat curve (or all NaN): no arc length means
         # no feature can be distinguished, so fall back to uniform
         # spacing at the requested budget.  Return raw y so the
         # caller's original values are preserved even when log_y is on.
         idx = np.unique(np.linspace(0, x.size - 1, nmin).astype(int))
         return x[idx], y_raw[idx]
 
-    # Dividing the total variation into ``nmin`` equal bins gives an
-    # implicit bin width; a bin-boundary crossing between consecutive
-    # samples marks a keep.  Dense output where y changes quickly,
-    # sparse where it is nearly flat.
-    maxdist = total_variation / nmin
-    bins = (y_cum / maxdist).astype(int)
+    # Bin-boundary crossings of the cumulative arc length give one
+    # sample per ``total_arc / nmin`` of length traversed in [0, 1]².
+    maxdist = total_arc / nmin
+    bins = (arc_cum / maxdist).astype(int)
     idx_dist = np.where(bins[:-1] != bins[1:])[0]
 
     # =====================================================================
-    # Merge feature pool: endpoints ∪ bend ∪ extrema ∪ distance samples
+    # Merge feature pool: endpoints ∪ bend ∪ extrema ∪ arc samples
     # =====================================================================
     mask = np.zeros(x.size, dtype=bool)
-    mask[0] = True                                  # first endpoint
-    mask[-1] = True                                 # last endpoint
-    mask[important_curv] = True                     # curvature + turning angle
-    mask[important_sign] = True                     # local extrema (noise-filtered)
-    mask[idx_dist] = True                           # arc-length samples
+    mask[0] = True
+    mask[-1] = True
+    mask[important_curv] = True
+    mask[important_sign] = True
+    mask[idx_dist] = True
     merged = np.where(mask)[0]
 
-    # =================================================================
-    # Strategy 5: R²-based thinning (optional)
-    # =================================================================
-    # Hierarchical bisection of the merged index array guarantees that
-    # the subset at budget N is a superset of the subset at N-1, so
-    # turning points never appear and disappear across neighbouring
-    # point counts.
-    # =================================================================
-    if r2_target is not None and r2_target < 1.0 and len(merged) > 5:
-        ss_tot = np.sum((y - np.mean(y)) ** 2)
+    # X-uniform mandatory coverage: even after the symmetric arc-length
+    # metric, a chunk that contains very little curve length per x-span
+    # could still be left empty by the bin-boundary scheme.  Promote one
+    # feature-pool point per chunk into the mandatory set so every
+    # part of the x-axis is covered by at least one retained point.
+    coverage_idx = _x_uniform_coverage_idx(x, merged, _COVERAGE_CHUNKS)
+    mandatory = np.unique(np.concatenate([prominent_idx, coverage_idx]))
+
+    # =====================================================================
+    # Strategy 5: greedy max-error reduction (optional)
+    # =====================================================================
+    maxerr_inserted = np.array([], dtype=int)
+    if max_err is not None and merged.size > 1:
+        pre_merged = merged.copy()
+        in_merged = np.zeros(x.size, dtype=bool)
+        in_merged[merged] = True
+        while True:
+            y_interp = np.interp(x, x[merged], y[merged])
+            abs_res = np.abs(y - y_interp)
+            worst_idx = int(np.argmax(abs_res))
+            if abs_res[worst_idx] <= max_err:
+                break
+            if in_merged[worst_idx]:
+                break
+            in_merged[worst_idx] = True
+            merged = np.sort(np.append(merged, worst_idx))
+        maxerr_inserted = np.setdiff1d(merged, pre_merged)
+
+    # =====================================================================
+    # Strategy 6: collinearity prune
+    # =====================================================================
+    if merged.size > 2 and y_range > 0:
+        protected = (
+            np.unique(np.concatenate([mandatory, maxerr_inserted]))
+            if maxerr_inserted.size > 0 else mandatory
+        )
+        merged = _prune_collinear(
+            merged, x, y, tol=1e-3 * y_range, protected=protected,
+        )
+
+    # --- Soft R² check ---
+    # Informational only: warn when the simplification fell short of
+    # the requested quality, so the caller can raise ``nmin`` or lower
+    # ``grad_inc``.  Computed in the working y-space (log when
+    # ``log_y`` is active) to match what the algorithm optimised.
+    if warn_below_r2 is not None and merged.size > 1:
+        ss_tot = float(np.sum((y - np.mean(y)) ** 2))
         if ss_tot > 0:
-            # Build the hierarchical-bisection ordering of merged.
-            #
-            # Classical construction (kept as reference):
-            #   level 0 = endpoints, level 1 = midpoint, level 2 =
-            #   quartiles, level k inserts 2^(k-1) new midpoints.
-            #
-            # The naive implementation is a Python BFS with a queue of
-            # (lo, hi) pairs — O(n_m) steps but with per-step tuple
-            # allocation and list appends, which becomes a bottleneck
-            # at the million-point scale.  The vectorised
-            # level-synchronous variant below processes an entire
-            # level of intervals with a handful of numpy ops; empty
-            # (hi - lo <= 1) intervals drop out naturally at each
-            # level.
-            n_m = len(merged)
-            order = np.empty(n_m, dtype=np.int64)
-            order[0] = 0
-            order[1] = n_m - 1
-            count = 2
-
-            # ``starts`` / ``ends`` hold every currently-open interval
-            # at the active level.  One np.empty+stride-assignment
-            # produces the next level's twice-as-many intervals.
-            starts = np.array([0], dtype=np.int64)
-            ends = np.array([n_m - 1], dtype=np.int64)
-            while count < n_m:
-                mids = (starts + ends) >> 1
-                valid = (mids > starts) & (mids < ends)
-                if not valid.any():
-                    break
-                vs = starts[valid]
-                ve = ends[valid]
-                vm = mids[valid]
-                take = min(vm.size, n_m - count)
-                order[count:count + take] = vm[:take]
-                count += take
-                if count >= n_m:
-                    break
-                # Child intervals: [s, m] and [m, e] for each valid mid.
-                n_next = 2 * vs.size
-                starts = np.empty(n_next, dtype=np.int64)
-                ends = np.empty(n_next, dtype=np.int64)
-                starts[0::2] = vs
-                ends[0::2] = vm
-                starts[1::2] = vm
-                ends[1::2] = ve
-
-            # order[:count] maps position-in-merged to bisection priority.
-            # Convert to actual data indices via merged[order].
-            bisection_pool = merged[order[:count]]
-
-            # Mandatory set = prominent extrema ∪ x-uniform coverage
-            # skeleton (low-amplitude regions get at least one retained
-            # point even when their contribution to global SS_tot is
-            # negligible — see docstring step 4b).  Points here are
-            # present in every trial subset, so the binary search
-            # below only varies how many optional points to add.
-            coverage_idx = _x_uniform_coverage_idx(x, merged, n_chunks)
-            mandatory = np.unique(np.concatenate([prominent_idx, coverage_idx]))
-            optional = bisection_pool[~np.isin(bisection_pool, mandatory)]
-
-            # Helper: compute R² for mandatory ∪ first k of optional.
-            def _r2_at(k):
-                if k <= 0:
-                    trial = np.sort(mandatory) if mandatory.size else optional[:5]
-                else:
-                    trial = np.sort(np.concatenate([mandatory, optional[:k]]))
-                y_interp = np.interp(x, x[trial], y[trial])
-                return 1.0 - np.sum((y - y_interp) ** 2) / ss_tot
-
-            # Minimum optional count so the total trial size is >= 5.
-            k_min = max(0, 5 - int(mandatory.size))
-            k_max = len(optional)
-
-            # Galloping search: expand exponentially from k_min until
-            # the trial first reaches the R² target, then binary-search
-            # inside the last doubling.  On typical inputs k_answer is
-            # orders of magnitude smaller than k_max (a smooth curve
-            # needs tens of points even when the candidate pool has
-            # hundreds of thousands), so spending ``log2(k_answer)``
-            # probes instead of ``log2(k_max)`` cuts the probe count —
-            # and the O(n) ``np.interp`` inside each probe — by roughly
-            # a factor of 2 on million-point noisy inputs.
-            if _r2_at(k_min) >= r2_target:
-                # Trivial case: minimum-size trial already meets target.
-                hi = k_min
-                lo = k_min
-            else:
-                lo = k_min
-                hi = min(max(k_min + 1, 8), k_max)
-                # Double hi until the target is crossed or k_max reached.
-                while hi < k_max and _r2_at(hi) < r2_target:
-                    lo = hi
-                    hi = min(hi * 2, k_max)
-                # Binary-search inside (lo, hi] for the smallest k
-                # achieving R² >= target.
-                while lo < hi:
-                    mid = (lo + hi) // 2
-                    if _r2_at(mid) >= r2_target:
-                        hi = mid
-                    else:
-                        lo = mid + 1
-
-            # Stability check: advance k while R² dips below target to
-            # guard against local dips caused by noisy points.  The
-            # scan keeps going until we see 3 consecutive k's that
-            # stay on target — cheap insurance against a non-monotone
-            # R² curve near the threshold.
-            stable_run = 0
-            k = lo
-            while k <= k_max:
-                if _r2_at(k) >= r2_target:
-                    stable_run += 1
-                    if stable_run >= 3:
-                        break
-                else:
-                    stable_run = 0
-                k += 1
-
-            merged = np.sort(np.concatenate([mandatory, optional[:k]]))
-
-            # =========================================================
-            # Strategy 5b: greedy max-error reduction (post-R²)
-            # =========================================================
-            maxerr_inserted = np.array([], dtype=int)
-            if max_err is not None:
-                pre_merged = merged.copy()
-                in_merged = np.zeros(x.size, dtype=bool)
-                in_merged[merged] = True
-                while True:
-                    y_interp = np.interp(x, x[merged], y[merged])
-                    abs_res = np.abs(y - y_interp)
-                    worst_idx = int(np.argmax(abs_res))
-                    if abs_res[worst_idx] <= max_err:
-                        break
-                    if in_merged[worst_idx]:
-                        break
-                    in_merged[worst_idx] = True
-                    merged = np.sort(np.append(merged, worst_idx))
-                maxerr_inserted = np.setdiff1d(merged, pre_merged)
-
-            # =========================================================
-            # Strategy 6: collinearity prune (post-thinning)
-            # =========================================================
-            if merged.size > 2 and y_range > 0:
-                protected = np.unique(np.concatenate(
-                    [mandatory, maxerr_inserted]
-                )) if maxerr_inserted.size > 0 else mandatory
-                merged = _prune_collinear(
-                    merged, x, y, tol=1e-3 * y_range, protected=protected,
+            y_interp = np.interp(x, x[merged], y[merged])
+            r2 = 1.0 - float(np.sum((y - y_interp) ** 2)) / ss_tot
+            if r2 < warn_below_r2:
+                warnings.warn(
+                    f"_simplify: R² = {r2:.4f} below warn_below_r2 = "
+                    f"{warn_below_r2:.4f} (n_out={merged.size}).  "
+                    f"Consider raising nmin or lowering grad_inc.",
+                    UserWarning,
+                    stacklevel=2,
                 )
 
     # ``y`` above was the working (optionally log-transformed) signal
@@ -1338,7 +1239,7 @@ def _simplify_animate(
     # --- Precompute simplification at increasing point counts ---
     # Start from 5 points and build up to the full feature-detected set.
     # First get all feature-detected indices (no R² thinning).
-    x_full, y_full = _simplify(x_o, y_o, r2_target=None)
+    x_full, y_full = _simplify(x_o, y_o, warn_below_r2=None)
     n_full = x_full.size
 
     # Generate log-spaced point counts from 5 up to full.
@@ -1390,7 +1291,7 @@ def _simplify_animate(
     # Mandatory set mirrors _simplify: prominent extrema ∪ x-uniform
     # coverage skeleton, so gradual low-amplitude regions keep a
     # representative point in every animation frame.
-    coverage_idx = _x_uniform_coverage_idx(x_o, full_idx, n_chunks)
+    coverage_idx = _x_uniform_coverage_idx(x_o, full_idx, _COVERAGE_CHUNKS)
     mandatory = np.unique(np.concatenate([prominent_idx, coverage_idx]))
     optional = bisection_pool[~np.isin(bisection_pool, mandatory)]
 
@@ -1995,7 +1896,7 @@ def _simplify_cli():
     log_y_arg = {"auto": "auto", "on": True, "off": False}[args.log_y]
     x_out, y_out = _simplify(
         x, y, nmin=args.nmin, grad_inc=args.grad_inc,
-        r2_target=args.r2_target, max_err=args.max_err, log_y=log_y_arg,
+        warn_below_r2=args.r2_target, max_err=args.max_err, log_y=log_y_arg,
     )
 
     # --- Write output ---
