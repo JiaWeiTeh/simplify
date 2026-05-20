@@ -1348,10 +1348,18 @@ def _simplify_animate(
     sweep_frames = int(fps * sweep_duration)
 
     # --- Set up figure ---
-    fig, (ax, ax_res, ax_err) = plt.subplots(
-        3, 1, figsize=(7, 7.5),
-        gridspec_kw={"height_ratios": [3, 1, 1], "hspace": 0.35},
+    # The curve (top) and residual (middle) share an x-axis and are
+    # packed tight together in their own gridspec; the RMSE panel
+    # (bottom) sits in a separate gridspec so it keeps a normal gap and
+    # an independent (log) x-axis.
+    fig = plt.figure(figsize=(7, 7.5))
+    gs_top = fig.add_gridspec(
+        2, 1, height_ratios=[3, 1], hspace=0.05, top=0.94, bottom=0.40,
     )
+    ax = fig.add_subplot(gs_top[0])
+    ax_res = fig.add_subplot(gs_top[1], sharex=ax)
+    gs_bot = fig.add_gridspec(1, 1, top=0.30, bottom=0.09)
+    ax_err = fig.add_subplot(gs_bot[0])
     margin = 0.05 * (np.nanmax(y_o) - np.nanmin(y_o) + 1e-30)
     ax.set_xlim(x_o[0], x_o[-1])
     ax.set_ylim(np.nanmin(y_o) - margin, np.nanmax(y_o) + margin)
@@ -1429,12 +1437,16 @@ def _simplify_animate(
                 r2_hit_npts = s["npts"]
                 break
 
-    # Draw persistent vertical line at R² target in bottom panel with label.
+    # Draw persistent vertical line at R² target in bottom panel.  The
+    # hit point is reported in the x-axis label rather than a legend so
+    # it does not overlap the dotted R² reference lines.
     if r2_hit_npts is not None:
         ax_err.axvline(r2_hit_npts, color="tab:green", ls="--", lw=1.2,
-                       alpha=0.8, zorder=1,
-                       label=f"$R^2 \\geq {r2_target}$ at $n={r2_hit_npts}$")
-        ax_err.legend(loc="upper right")
+                       alpha=0.8, zorder=1)
+        ax_err.set_xlabel(
+            rf"Number of points $n$   ($R^2 \geq {r2_target:g}$ "
+            rf"at $n = {r2_hit_npts}$)"
+        )
 
     err_line, = ax_err.plot([], [], "o-", color="tab:blue", ms=3, lw=1.0)
     err_marker = ax_err.scatter([], [], s=40, color="tab:red", zorder=5,
