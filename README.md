@@ -144,29 +144,29 @@ points while a smaller one keeps only the sharpest features. It runs
 instead of the normal conversion, so no output file is written.
 
 ```bash
-python simplify.py --randomSB99 --diagnostic
+python simplify.py --random --seed 67 --diagnostic
 ```
 
 ```text
-  Diagnostic: Starburst99 SED at 5 Myr (1221 pts)
-  n_orig = 1221    working space: linear-y
+  Diagnostic: random curve (10000 pts, seed=67)
+  n_orig = 10000    working space: linear-y
   --------------------------------------------------------
    nrel    n_out   compression      max_err        R^2
   --------------------------------------------------------
-   0.80      977          1.2x    1.784e-04   1.000000
-   0.60      733          1.7x    9.846e-04   1.000000
-   0.40      488          2.5x    3.534e-03   1.000000
-   0.20      244          5.0x    1.537e-02   0.999993
+   0.80     8000          1.2x    3.056e-03   1.000000
+   0.60     6000          1.7x    8.548e-03   0.999997
+   0.40     4000          2.5x    1.232e-02   0.999987
+   0.20     2000          5.0x    2.392e-02   0.999957
   --------------------------------------------------------
   max_err = worst-case |error| in linear-y space (pass as --max-err).
 ```
 
-Read it as a budget-vs-accuracy curve: 20 % of the points (244) already
-nails this SED to a 0.015 dex worst-case error, and every extra slice of
-budget shaves the worst case down further (0.0035 dex at 40 %, 0.0002 at
-80 %). The `max_err` column is the direct guide to `--max-err`: if you can
-live with ~0.015 dex (≈ 3.5 %) error, `nrel = 0.2` is plenty; if you need
-0.001 dex, you'll want closer to `nrel = 0.6`.
+Read it as a budget-vs-accuracy curve: even at `nrel = 0.2` (a 5×
+compression) the worst-case error is only 0.024 and R² is already 0.99996,
+and every extra slice of budget shaves the worst case down further (0.012
+at 40 %, 0.003 at 80 %). The `max_err` column is the direct guide to
+`--max-err`: if you can live with a ~0.024 worst-case error, `nrel = 0.2`
+is plenty; if you need 0.003, you'll want closer to `nrel = 0.8`.
 
 The reported `max_err` and `R^2` are always in the y-space the pipeline
 optimised — **dex when `log_y` is active**, linear otherwise — so the
@@ -175,19 +175,19 @@ optimised — **dex when `log_y` is active**, linear otherwise — so the
 grid of before/after panels (4 → 2×2, 5–6 → 2×3, 7–9 → 3×3, …):
 
 ```bash
-python simplify.py --randomSB99 --diagnostic --nrels 0.9,0.5,0.25 --plot
+python simplify.py --random --seed 67 --diagnostic --nrels 0.9,0.5,0.25 --plot
 ```
 
-![Diagnostic grid for the Starburst99 SED](demo_sb99_diagnostic.png)
+![Diagnostic grid for the random seed-67 curve](demo_random_diagnostic.png)
 
 From Python the same sweep returns a list of per-`nrel` dicts (with the
 metrics and the simplified arrays) so you can drive parameter selection
 programmatically:
 
 ```python
-from simplify import _load_sb99_5myr, _simplify_diagnostic
+from simplify import _random_test_curve, _simplify_diagnostic
 
-x, y = _load_sb99_5myr()
+x, y = _random_test_curve(seed=67)
 rows = _simplify_diagnostic(x, y, nrels=[0.6, 0.3], plot=False)
 print(rows[0]["n_out"], rows[0]["max_err"], rows[0]["r_squared"])
 ```
