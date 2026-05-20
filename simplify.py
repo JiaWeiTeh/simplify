@@ -11,6 +11,7 @@ Functions
 ---------
 _simplify          Core downsampling algorithm.
 _simplify_error    Error metrics (RMSE, MAE, R², compression, …).
+_simplify_diagnostic  Sweep target sizes; tabulate max_err / R² (+ grid plot).
 _simplify_plot     Static before/after comparison plot.
 _simplify_animate  Animated GIF/MP4 of the simplification process.
 _peak_prominences  1-D topological persistence (O(n log n)).
@@ -1198,6 +1199,260 @@ def _simplify_plot(
             plt.close(fig)
 
 
+def _importance_order(
+    x: np.ndarray, y_work: np.ndarray, n_max: int
+) -> np.ndarray:
+    """
+    Rank sample indices by piecewise-linear reconstruction importance.
+
+    Greedy top-down refinement: start from the two endpoints and
+    repeatedly append the index whose current linear-interpolation error
+    is largest.  A length-``k`` prefix of the result is therefore the
+    ``k`` points a connect-the-dots reconstruction needs most — sharp
+    spikes and bends are grabbed first, redundant collinear samples last.
+    This is the same worst-error mechanism :func:`_simplify` uses for its
+    ``max_err`` insertions, so a prefix of length ``k`` is a principled
+    answer to "which ``k`` points matter most?".
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Sorted (non-decreasing) x-values.
+    y_work : np.ndarray
+        Working-space y-values (``log10`` already applied when relevant).
+    n_max : int
+        Maximum prefix length to build (clamped to ``x.size``).
+
+    Returns
+    -------
+    np.ndarray
+        Index array of length ``min(n_max, x.size)``; element ``i`` is the
+        ``i``-th most important sample (the two endpoints come first).
+    """
+    n = x.size
+    n_max = min(int(n_max), n)
+    if n_max <= 0:
+        return np.empty(0, dtype=np.int64)
+
+    in_set = np.zeros(n, dtype=bool)
+    order = []
+    for seed in (0, n - 1):
+        if not in_set[seed] and len(order) < n_max:
+            in_set[seed] = True
+            order.append(seed)
+
+    # Each pass rebuilds the interpolant from the current set and adds the
+    # single worst-error sample.  ``np.flatnonzero`` returns the kept
+    # indices already sorted, so the interpolation x-grid stays monotone.
+    while len(order) < n_max:
+        sel = np.flatnonzero(in_set)
+        y_interp = np.interp(x, x[sel], y_work[sel])
+        err = np.abs(y_work - y_interp)
+        err[in_set] = -1.0
+        worst = int(np.argmax(err))
+        if err[worst] <= 0.0:
+            break                       # remaining points add no information
+        in_set[worst] = True
+        order.append(worst)
+
+    # If the greedy loop stopped early (curve already reproduced exactly),
+    # pad with the leftover indices so the requested count is still met.
+    if len(order) < n_max:
+        order.extend(np.flatnonzero(~in_set)[: n_max - len(order)].tolist())
+
+    return np.asarray(order, dtype=np.int64)
+
+
+def _simplify_diagnostic(
+    x_orig: Union[np.ndarray, Sequence[float]],
+    y_orig: Union[np.ndarray, Sequence[float]],
+    nrels: Sequence[float] = (0.8, 0.6, 0.4, 0.2),
+    log_y: Union[bool, str] = "auto",
+    title: str = "Simplification diagnostic",
+    plot: bool = False,
+    save_path: Union[str, None] = None,
+    show: bool = True,
+    xlabel: str = r"$x$",
+    ylabel: str = r"$y$",
+) -> list:
+    """
+    Sweep a curve over several output sizes and report fidelity vs. size.
+
+    A convenience tool for users who don't know what ``nmin`` or
+    ``max_err`` to pass.  For each *relative* output size
+    ``nrel = n_output / n_original`` in ``nrels`` it keeps **exactly**
+    ``round(nrel * n_original)`` points — the most important ones, ranked
+    by :func:`_importance_order` — and tabulates the resulting worst-case
+    error and R² so the trade-off between size and accuracy is visible at
+    a glance.  Larger ``nrel`` therefore over-populates the curve with
+    progressively less important points; smaller ``nrel`` keeps only the
+    sharpest features.
+
+    Points are ranked by greedy worst-error refinement, the same
+    mechanism :func:`_simplify` uses for its ``max_err`` insertions, so
+    the tabulated ``max_err`` is a direct guide to the ``--max-err`` value
+    needed for a given fidelity.  It is reported in the same y-space the
+    pipeline optimises (log10-y when ``log_y`` activates, linear
+    otherwise), so the number drops straight into ``--max-err``.
+
+    Parameters
+    ----------
+    x_orig, y_orig : array-like
+        Original (full-resolution) curve.
+    nrels : sequence of float, optional
+        Target relative output sizes in ``(0, 1]``.  Default
+        ``(0.8, 0.6, 0.4, 0.2)``.  The achieved point count equals
+        ``round(nrel * n_original)`` exactly (clamped to ``[2, n_orig]``).
+    log_y : bool or "auto", optional
+        Selects the y-space the ranking and the reported metrics use.
+        ``"auto"`` (default) switches to log10-y when every ``y > 0`` and
+        the dynamic range exceeds two decades, matching :func:`_simplify`.
+    title : str, optional
+        Heading for the table and the grid plot.
+    plot : bool, optional
+        If ``True`` (or ``save_path`` is set), draw one before/after
+        panel per ``nrel`` in a near-square grid (4 panels → 2×2,
+        5–6 → 2×3, 7–9 → 3×3, …).  Requires matplotlib.  Default ``False``.
+    save_path : str or None, optional
+        If given, save the grid plot to this path.  Implies plotting even
+        when ``plot`` is ``False``.  Default ``None``.
+    show : bool, optional
+        Whether to call ``plt.show()`` for the grid plot.  Default ``True``.
+    xlabel, ylabel : str, optional
+        Axis labels for the grid panels.
+
+    Returns
+    -------
+    rows : list of dict
+        One dict per ``nrel`` with keys ``nrel``, ``n_out``,
+        ``compression``, ``max_err``, ``r_squared`` (the last two in the
+        working y-space), plus the full ``metrics`` dict and the
+        ``x_simp`` / ``y_simp`` arrays for that level.
+
+    Examples
+    --------
+    >>> x, y = _load_sb99_5myr()
+    >>> rows = _simplify_diagnostic(x, y)            # prints a table
+    >>> rows = _simplify_diagnostic(x, y, nrels=[0.5, 0.25], plot=True)
+    """
+    x_o = np.asarray(x_orig, dtype=float)
+    y_o = np.asarray(y_orig, dtype=float)
+
+    # Sort by x so the piecewise-linear interpolation is well defined.
+    if x_o.size > 1 and not np.all(np.diff(x_o) >= 0):
+        order = np.argsort(x_o, kind="stable")
+        x_o = x_o[order]
+        y_o = y_o[order]
+    n_orig = x_o.size
+
+    nrels = [float(r) for r in nrels]
+    if not nrels:
+        raise ValueError("nrels must contain at least one value.")
+    if any(r <= 0.0 or r > 1.0 for r in nrels):
+        raise ValueError(f"every nrel must lie in (0, 1]; got {nrels}")
+
+    # Pick the y-space the ranking and metrics use so that the tabulated
+    # max_err matches what ``--max-err`` expects (the pipeline bounds the
+    # error in log10-y space when log_y is active).
+    use_log = _auto_log_y(y_o, log_y)
+    y_space = "log10-y (dex)" if use_log else "linear-y"
+    y_work = np.log10(y_o) if use_log else y_o
+
+    # Build one importance ranking up to the largest target, then a prefix
+    # of it gives the exact point set for every (smaller) nrel.
+    targets = {
+        r: max(2, min(n_orig, int(round(r * n_orig)))) for r in nrels
+    }
+    full_order = _importance_order(x_o, y_work, max(targets.values()))
+
+    rows = []
+    for nrel in nrels:
+        n_target = targets[nrel]
+        idx = np.sort(full_order[:n_target])
+        x_s, y_s = x_o[idx], y_o[idx]
+        m = _simplify_error(x_o, y_o, x_s, y_s)
+        if use_log and not np.isnan(m["log_r_squared"]):
+            max_err = m["log_max_dex_err"]
+            r2 = m["log_r_squared"]
+        else:
+            max_err = m["max_abs_err"]
+            r2 = m["r_squared"]
+        rows.append({
+            "nrel": nrel,
+            "n_out": m["n_simp"],
+            "compression": m["compression"],
+            "max_err": max_err,
+            "r_squared": r2,
+            "metrics": m,
+            "x_simp": x_s,
+            "y_simp": y_s,
+        })
+
+    # --- Print the table ---
+    width = 56
+    print()
+    print(f"  {title}")
+    print(f"  n_orig = {n_orig}    working space: {y_space}")
+    print("  " + "-" * width)
+    print(f"  {'nrel':>5}  {'n_out':>7}  {'compression':>12}  "
+          f"{'max_err':>11}  {'R^2':>9}")
+    print("  " + "-" * width)
+    for r in rows:
+        print(f"  {r['nrel']:>5.2f}  {r['n_out']:>7d}  "
+              f"{r['compression']:>11.1f}x  {r['max_err']:>11.3e}  "
+              f"{r['r_squared']:>9.6f}")
+    print("  " + "-" * width)
+    print(f"  max_err = worst-case |error| in {y_space} space "
+          f"(pass as --max-err).")
+    print()
+
+    # --- Optional grid plot ---
+    if plot or save_path is not None:
+        import matplotlib.pyplot as plt
+
+        k = len(rows)
+        ncols = int(np.ceil(np.sqrt(k)))
+        nrows = int(np.ceil(k / ncols))
+
+        with plt.style.context(str(_STYLE_FILE)):
+            fig, axes = plt.subplots(
+                nrows, ncols,
+                figsize=(3.4 * ncols, 2.7 * nrows),
+                squeeze=False, layout="constrained",
+            )
+            flat = axes.ravel()
+            for i, (ax, r) in enumerate(zip(flat, rows)):
+                ax.plot(x_o, y_o, "-", color="0.6", lw=0.7)
+                ax.plot(r["x_simp"], r["y_simp"], "o-", color="tab:red",
+                        ms=2.0, lw=0.7)
+                ax.set_title(
+                    f"nrel = {r['nrel']:.2f},  n = {r['n_out']}\n"
+                    rf"$R^2$ = {r['r_squared']:.5f},  "
+                    rf"max_err = {r['max_err']:.2e}",
+                    fontsize=8,
+                )
+                # Label only the left column and the bottom-most panel of
+                # each column (the cell below it is empty or off-grid).
+                if i % ncols == 0:
+                    ax.set_ylabel(ylabel)
+                if i + ncols >= k:
+                    ax.set_xlabel(xlabel)
+            # Hide any unused cells in the last row.
+            for ax in flat[k:]:
+                ax.set_visible(False)
+            fig.suptitle(title)
+
+            if save_path is not None:
+                fig.savefig(save_path)
+                print(f"Diagnostic grid saved to '{save_path}'.")
+            if show:
+                plt.show()
+            else:
+                plt.close(fig)
+
+    return rows
+
+
 def _simplify_animate(
     x_orig: Union[np.ndarray, Sequence[float]],
     y_orig: Union[np.ndarray, Sequence[float]],
@@ -1728,6 +1983,7 @@ def _simplify_cli():
     -----
     python simplify.py input.csv -o output.csv --nmin 150 --grad-inc 0.5
     python simplify.py input.csv --metrics --plot
+    python simplify.py input.csv --diagnostic --plot
     python simplify.py input.csv --animate simplify.gif --animate-duration 5
 
     Positional arguments
@@ -1768,6 +2024,15 @@ def _simplify_cli():
         Also used as the reference level in the animation's bottom panel.
     --metrics : flag
         Print error metrics (RMSE, MAE, R², etc.) after simplification.
+    --diagnostic : flag
+        Inspection mode.  Sweep several target sizes and print a table of
+        achieved n_out, worst-case max_err, and R² so you can pick --nmin
+        and --max-err without guessing.  Combine with --plot / --plot-save
+        to draw a near-square grid of before/after panels.  Runs instead
+        of the normal conversion (no output file is written).
+    --nrels : str
+        Comma-separated target relative sizes (n_out/n_orig) for
+        --diagnostic.  Default ``0.8,0.6,0.4,0.2``.
     --plot : flag
         Show an interactive before/after comparison plot with residuals.
     --plot-save : str
@@ -1849,6 +2114,21 @@ def _simplify_cli():
         "--metrics",
         action="store_true",
         help="Print error metrics (RMSE, MAE, R², etc.) after simplification.",
+    )
+    parser.add_argument(
+        "--diagnostic",
+        action="store_true",
+        help="Inspection mode: sweep several target sizes and print a table "
+             "of n_out, max_err, and R² so you can choose --nmin / --max-err.  "
+             "Combine with --plot or --plot-save to also draw a grid of "
+             "before/after panels.  Skips the normal conversion/output.",
+    )
+    parser.add_argument(
+        "--nrels",
+        default=None,
+        metavar="LIST",
+        help="Comma-separated target relative sizes (n_out/n_orig) for "
+             "--diagnostic, e.g. '0.8,0.6,0.4,0.2' (the default).",
     )
     parser.add_argument(
         "--plot",
@@ -2006,8 +2286,38 @@ def _simplify_cli():
             "either provide an input file, use --random, or use --randomSB99."
         )
 
-    # --- Simplify ---
     log_y_arg = {"auto": "auto", "on": True, "off": False}[args.log_y]
+
+    # SB99 carries log-log axes; reuse its nice labels for grid panels.
+    sb99_labels = {}
+    if args.randomSB99:
+        sb99_labels["xlabel"] = r"$\log_{10}(\lambda\ [\mathrm{\AA}])$"
+        sb99_labels["ylabel"] = r"$\log_{10}(L_{\lambda}\ [\mathrm{erg/s/\AA}])$"
+
+    # --- Inspection mode: diagnostic sweep (no conversion / output) ---
+    if args.diagnostic:
+        if args.nrels:
+            try:
+                nrels = [float(s) for s in args.nrels.split(",") if s.strip()]
+            except ValueError:
+                parser.error(
+                    f"--nrels must be comma-separated numbers; got {args.nrels!r}"
+                )
+            if not nrels or any(r <= 0.0 or r > 1.0 for r in nrels):
+                parser.error(
+                    f"--nrels values must lie in (0, 1]; got {args.nrels!r}"
+                )
+        else:
+            nrels = (0.8, 0.6, 0.4, 0.2)
+        _simplify_diagnostic(
+            x, y, nrels=nrels, log_y=log_y_arg,
+            title=f"Diagnostic: {source_label}",
+            plot=args.plot, save_path=args.plot_save, show=args.plot,
+            **sb99_labels,
+        )
+        return
+
+    # --- Simplify ---
     if args.max_err is not None and log_y_arg == "auto":
         parser.error(
             "--max-err requires an explicit --log-y on|off, because "
@@ -2066,10 +2376,6 @@ def _simplify_cli():
 
     # --- Optional: animation ---
     if args.animate:
-        anim_kwargs = {}
-        if args.randomSB99:
-            anim_kwargs["xlabel"] = r"$\log_{10}(\lambda\ [\mathrm{\AA}])$"
-            anim_kwargs["ylabel"] = r"$\log_{10}(L_{\lambda}\ [\mathrm{erg/s/\AA}])$"
         _simplify_animate(
             x, y,
             save_path=args.animate,
@@ -2079,7 +2385,7 @@ def _simplify_cli():
             r2_target=args.r2_target,
             max_err=args.max_err,
             log_y=log_y_arg,
-            **anim_kwargs,
+            **sb99_labels,
         )
 
 
@@ -2138,6 +2444,7 @@ if __name__ == "__main__":
         print("  Or from the command line:")
         print()
         print("    python simplify.py data.csv -o out.csv --metrics")
+        print("    python simplify.py data.csv --diagnostic")
         print("    python simplify.py data.csv --plot")
         print("    python simplify.py data.csv --animate simplify.gif")
         print()

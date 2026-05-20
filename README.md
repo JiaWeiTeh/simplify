@@ -80,6 +80,7 @@ astrophysical density/temperature/flux profiles.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Command line](#command-line)
+- [Choosing `nmin` and `max_err` (diagnostic mode)](#choosing-nmin-and-max_err-diagnostic-mode)
 - [Python API](#python-api)
 - [Input and output format](#input-and-output-format)
 - [How it works (the short version)](#how-it-works-the-short-version)
@@ -117,6 +118,7 @@ simplification process. Other quick demos:
 
 ```bash
 python simplify.py --random --metrics                          # error table
+python simplify.py --random --diagnostic                       # size/error sweep
 python simplify.py --random --plot                             # comparison plot
 python simplify.py --random --animate demo.gif                 # animated GIF
 python simplify.py --randomSB99 --animate sb99.gif             # real SED data
@@ -135,6 +137,67 @@ python simplify.py data.csv --grad-inc 0.5                     # lower curvature
 ```
 
 Run `python simplify.py --help` for all options.
+
+## Choosing `nmin` and `max_err` (diagnostic mode)
+
+Not sure how aggressively to downsample, or what `--max-err` to ask for?
+`--diagnostic` sweeps a handful of *relative* output sizes
+(`nrel = n_out / n_orig`) and prints what each one buys you — the point
+count, the worst-case error, and the R². Each row keeps **exactly**
+`round(nrel · n_orig)` points: the most important ones first (ranked by
+greedy worst-error refinement — the same mechanism `--max-err` uses), so a
+larger `nrel` over-populates the curve with progressively less important
+points while a smaller one keeps only the sharpest features. It runs
+instead of the normal conversion, so no output file is written.
+
+```bash
+python simplify.py --random --seed 67 --diagnostic
+```
+
+```text
+  Diagnostic: random curve (10000 pts, seed=67)
+  n_orig = 10000    working space: linear-y
+  --------------------------------------------------------
+   nrel    n_out   compression      max_err        R^2
+  --------------------------------------------------------
+   0.80     8000          1.2x    3.056e-03   1.000000
+   0.60     6000          1.7x    8.548e-03   0.999997
+   0.40     4000          2.5x    1.232e-02   0.999987
+   0.20     2000          5.0x    2.392e-02   0.999957
+  --------------------------------------------------------
+  max_err = worst-case |error| in linear-y space (pass as --max-err).
+```
+
+Read it as a budget-vs-accuracy curve: even at `nrel = 0.2` (a 5×
+compression) the worst-case error is only 0.024 and R² is already 0.99996,
+and every extra slice of budget shaves the worst case down further (0.012
+at 40 %, 0.003 at 80 %). The `max_err` column is the direct guide to
+`--max-err`: if you can live with a ~0.024 worst-case error, `nrel = 0.2`
+is plenty; if you need 0.003, you'll want closer to `nrel = 0.8`.
+
+The reported `max_err` and `R^2` are always in the y-space the pipeline
+optimised — **dex when `log_y` is active**, linear otherwise — so the
+`max_err` value drops straight into `--max-err`. Customise the targets with
+`--nrels`, and add `--plot` (or `--plot-save PATH`) to draw a near-square
+grid of before/after panels (4 → 2×2, 5–6 → 2×3, 7–9 → 3×3, …):
+
+```bash
+python simplify.py --random --seed 67 --diagnostic --nrels 0.9,0.5,0.25 --plot
+```
+
+![Diagnostic grid for the random seed-67 curve](demo_random_diagnostic.png)
+
+From Python the same sweep returns a list of per-`nrel` dicts (with the
+metrics and the simplified arrays) so you can drive parameter selection
+programmatically:
+
+```python
+from simplify import _random_test_curve, _simplify_diagnostic
+
+x, y = _random_test_curve(seed=67)
+rows = _simplify_diagnostic(x, y, nrels=[0.6, 0.3], plot=False)
+print(rows[0]["n_out"], rows[0]["max_err"], rows[0]["r_squared"])
+```
 
 ## Python API
 
