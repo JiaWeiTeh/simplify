@@ -1177,10 +1177,12 @@ def _simplify_animate(
     Create an animated GIF showing progressive curve simplification.
 
     The animation builds the simplified curve up from 5 points to the
-    full feature-detected set, using the same mandatory / hierarchical-
-    bisection ordering as :func:`_simplify` so that frames are strictly
-    nested (each frame is a superset of the previous one).  Three panels
-    are shown:
+    full feature-detected set.  The mandatory set (prominent extrema plus
+    the x-uniform coverage skeleton) follows the same rule as
+    :func:`_simplify` and is present from the first frame; the remaining
+    feature points are added in hierarchical-bisection order so that
+    frames are strictly nested (each frame is a superset of the previous
+    one).  Three panels are shown:
 
     - **Top panel**: the underlying curve as a thin grey line, with the
       current simplified points overlaid as red dots + line.
@@ -1213,6 +1215,18 @@ def _simplify_animate(
         R² reference level drawn as a vertical line in the bottom
         panel (purely cosmetic — does not affect which frames are
         rendered or how ``_simplify`` selects points).  Default: 0.9.
+    max_err : float or None, optional
+        Forwarded to :func:`_simplify` so the full (final-frame) point
+        set is the worst-error-bounded one, and drawn as ``±max_err``
+        horizontal dashed lines on the residual (middle) panel.  The
+        greedy insertions enter the frame sweep in bisection order like
+        any other feature point, so the residual visibly converges into
+        the band as the animation progresses.  Default: ``None``.
+    xlabel : str, optional
+        X-axis label for the curve and residual panels.  Default:
+        ``r"$x$"``.
+    ylabel : str, optional
+        Y-axis label for the curve panel.  Default: ``r"$y$"``.
 
     Examples
     --------
@@ -1231,7 +1245,10 @@ def _simplify_animate(
 
     # --- Precompute simplification at increasing point counts ---
     # Start from 5 points and build up to the full feature-detected set.
-    x_full, y_full = _simplify(x_o, y_o, warn_below_r2=None)
+    # ``max_err`` is forwarded so the final frame is the same worst-error-
+    # bounded set the caller gets from _simplify; the greedy insertions
+    # then enter the frame sweep in bisection order with every other point.
+    x_full, y_full = _simplify(x_o, y_o, warn_below_r2=None, max_err=max_err)
     n_full = x_full.size
 
     # Generate log-spaced point counts from 5 up to full.
@@ -1491,7 +1508,7 @@ def _random_test_curve(
     The curve is built from several additive components, each designed to
     trigger a different branch of ``_simplify``:
 
-    - **Smooth base** – sum of 3–6 sinusoids with random frequencies,
+    - **Smooth base** – sum of 2–4 sinusoids with random frequencies,
       amplitudes and phases.  Produces gentle curvature and many local
       extrema (tests sign-change detection).
     - **Flat plateaus** – 1–3 constant-value segments spliced into the
@@ -1656,10 +1673,11 @@ def _simplify_cli():
 
     Positional arguments
     --------------------
-    infile : str
+    infile : str, optional
         Path to input data file.  Must contain two columns (x, y).
         Lines starting with '#' are treated as comments and skipped.
         Both whitespace- and comma-delimited formats are accepted.
+        Not required when ``--random`` or ``--randomSB99`` is used.
 
     Optional arguments
     ------------------
@@ -1669,6 +1687,23 @@ def _simplify_cli():
         Minimum number of output samples (default: 100).
     --grad-inc : float
         Bend sensitivity (default: 1.0, dimensionless in normalised coords).
+    --max-err : float
+        Maximum allowed absolute interpolation error.  A greedy loop
+        inserts original points at the worst-error locations until no
+        point deviates by more than this value.  Default: None.
+    --log-y : {auto, on, off}
+        Work in log-y space for every internal feature detector.
+        ``auto`` (default) switches to log when every y > 0 and
+        max(y)/min(y) > 100; ``on`` forces it; ``off`` keeps the linear
+        path.
+    --dedup-tol : float
+        Stagnation tolerance for collapsing near-duplicate consecutive
+        samples (common ODE-solver artefact).  Set to 0 to disable.
+        Default: 1e-6.
+    --r2-target : float
+        R² quality threshold (default: 0.9).  A warning is emitted when
+        the output's R² falls below this value (informational only).
+        Also used as the reference level in the animation's bottom panel.
     --metrics : flag
         Print error metrics (RMSE, MAE, R², etc.) after simplification.
     --plot : flag
@@ -1682,6 +1717,19 @@ def _simplify_cli():
         Animation duration in seconds (default: 3.0).
     --animate-fps : int
         Animation frames per second (default: 30).
+    --random : flag
+        Generate a random test curve instead of reading a file.
+    --randomSB99 : flag
+        Use the bundled Starburst99 SED at 5 Myr (log10 wavelength vs
+        log10 luminosity) instead of reading a file.  Mutually exclusive
+        with ``--random``.
+    --seed : int
+        Random seed for ``--random`` (default: None = non-reproducible).
+    --random-npts : int
+        Number of points in the ``--random`` curve (default: 10000).
+    --noise / --no-noise : flag
+        Whether ``--random`` adds Gaussian noise (0.1 % of y-range).
+        Default: ``--noise``.
     """
     import argparse
 
