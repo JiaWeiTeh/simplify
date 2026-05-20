@@ -1418,21 +1418,27 @@ def _simplify_diagnostic(
             fig, axes = plt.subplots(
                 nrows, ncols,
                 figsize=(3.4 * ncols, 2.7 * nrows),
-                squeeze=False, layout="constrained",
+                squeeze=False, sharex=True, sharey=True,
+                layout="constrained",
             )
+            # Pack the panels tight together (shared axes mean interior
+            # tick labels are dropped, so the small gap reads cleanly).
+            fig.get_layout_engine().set(w_pad=0.02, h_pad=0.02,
+                                        wspace=0.03, hspace=0.05)
             flat = axes.ravel()
             for i, (ax, r) in enumerate(zip(flat, rows)):
                 ax.plot(x_o, y_o, "-", color="0.6", lw=0.7)
+                # Carry the point count / fidelity on the red series so it
+                # shows up in a compact in-panel legend rather than a
+                # crowded multi-line title.
                 ax.plot(r["x_simp"], r["y_simp"], "o-", color="tab:red",
-                        ms=2.0, lw=0.7)
-                ax.set_title(
-                    f"nrel = {r['nrel']:.2f},  n = {r['n_out']}\n"
-                    rf"$R^2$ = {r['r_squared']:.5f},  "
-                    rf"max_err = {r['max_err']:.2e}",
-                    fontsize=8,
-                )
-                # Label only the left column and the bottom-most panel of
-                # each column (the cell below it is empty or off-grid).
+                        ms=2.0, lw=0.7,
+                        label=(rf"$n = {r['n_out']}$" "\n"
+                               rf"$R^2 = {r['r_squared']:.5f}$" "\n"
+                               rf"max_err $= {r['max_err']:.2e}$"))
+                ax.set_title(f"nrel = {r['nrel']:.2f}", fontsize=9)
+                ax.legend(loc="best", fontsize=7, handlelength=1.0,
+                          framealpha=0.85)
                 if i % ncols == 0:
                     ax.set_ylabel(ylabel)
                 if i + ncols >= k:
