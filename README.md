@@ -326,4 +326,4 @@ Released under the [MIT License](LICENSE).
 
 > *"It's amazing!"* — Karin
 
-> *"It simplifies my life!"* — Philipp
+> *"It simplifies my life."* — Philipp
