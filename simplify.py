@@ -1266,7 +1266,7 @@ def _importance_order(
 def _simplify_diagnostic(
     x_orig: Union[np.ndarray, Sequence[float]],
     y_orig: Union[np.ndarray, Sequence[float]],
-    nrels: Sequence[float] = (0.8, 0.6, 0.4, 0.2),
+    nrels: Sequence[float] = (0.8, 0.3, 0.1, 0.01),
     log_y: Union[bool, str] = "auto",
     title: str = "Simplification diagnostic",
     plot: bool = False,
@@ -1301,7 +1301,7 @@ def _simplify_diagnostic(
         Original (full-resolution) curve.
     nrels : sequence of float, optional
         Target relative output sizes in ``(0, 1]``.  Default
-        ``(0.8, 0.6, 0.4, 0.2)``.  The achieved point count equals
+        ``(0.8, 0.3, 0.1, 0.01)``.  The achieved point count equals
         ``round(nrel * n_original)`` exactly (clamped to ``[2, n_orig]``).
     log_y : bool or "auto", optional
         Selects the y-space the ranking and the reported metrics use.
@@ -2032,7 +2032,7 @@ def _simplify_cli():
         of the normal conversion (no output file is written).
     --nrels : str
         Comma-separated target relative sizes (n_out/n_orig) for
-        --diagnostic.  Default ``0.8,0.6,0.4,0.2``.
+        --diagnostic.  Default ``0.8,0.3,0.1,0.01``.
     --plot : flag
         Show an interactive before/after comparison plot with residuals.
     --plot-save : str
@@ -2128,7 +2128,7 @@ def _simplify_cli():
         default=None,
         metavar="LIST",
         help="Comma-separated target relative sizes (n_out/n_orig) for "
-             "--diagnostic, e.g. '0.8,0.6,0.4,0.2' (the default).",
+             "--diagnostic, e.g. '0.8,0.3,0.1,0.01' (the default).",
     )
     parser.add_argument(
         "--plot",
@@ -2308,7 +2308,7 @@ def _simplify_cli():
                     f"--nrels values must lie in (0, 1]; got {args.nrels!r}"
                 )
         else:
-            nrels = (0.8, 0.6, 0.4, 0.2)
+            nrels = (0.8, 0.3, 0.1, 0.01)
         _simplify_diagnostic(
             x, y, nrels=nrels, log_y=log_y_arg,
             title=f"Diagnostic: {source_label}",
