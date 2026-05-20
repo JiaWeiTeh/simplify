@@ -213,3 +213,11 @@ space, which is what the algorithm's internal arc-length sampler assumed.
 
 - **numpy** (required)
 - **matplotlib** (optional — plotting and animation)
+
+## Testimonials
+
+> *"It's good. It's peer reviewed."*
+
+> *"It's amazing!"* — Karin
+
+> *"It simplifies my life!"* — Philipp
