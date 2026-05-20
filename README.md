@@ -135,9 +135,13 @@ Run `python simplify.py --help` for all options.
 
 Not sure how aggressively to downsample, or what `--max-err` to ask for?
 `--diagnostic` sweeps a handful of *relative* output sizes
-(`nrel = n_out / n_orig`) and prints what each one buys you — the achieved
-point count, the worst-case error, and the R². It runs instead of the
-normal conversion, so no output file is written.
+(`nrel = n_out / n_orig`) and prints what each one buys you — the point
+count, the worst-case error, and the R². Each row keeps **exactly**
+`round(nrel · n_orig)` points: the most important ones first (ranked by
+greedy worst-error refinement — the same mechanism `--max-err` uses), so a
+larger `nrel` over-populates the curve with progressively less important
+points while a smaller one keeps only the sharpest features. It runs
+instead of the normal conversion, so no output file is written.
 
 ```bash
 python simplify.py --randomSB99 --diagnostic
@@ -149,23 +153,20 @@ python simplify.py --randomSB99 --diagnostic
   --------------------------------------------------------
    nrel    n_out   compression      max_err        R^2
   --------------------------------------------------------
-   0.80      360          3.4x    1.009e-02   0.999997
-   0.60      359          3.4x    2.231e-01   0.999980
-   0.40      359          3.4x    2.231e-01   0.999980
-   0.20      358          3.4x    2.231e-01   0.999980
+   0.80      977          1.2x    1.784e-04   1.000000
+   0.60      733          1.7x    9.846e-04   1.000000
+   0.40      488          2.5x    3.534e-03   1.000000
+   0.20      244          5.0x    1.537e-02   0.999993
   --------------------------------------------------------
   max_err = worst-case |error| in linear-y space (pass as --max-err).
 ```
 
-Two things jump out for this SED. First, the achieved `n_out` **saturates
-near 360** no matter how small a target you ask for — the feature pool and
-the collinearity prune won't drop below the points the curve genuinely
-needs, so chasing `nrel = 0.2` buys nothing over `0.4`. Second, the
-`max_err` column tells you exactly what to pass to `--max-err`: the default
-360-point result already leaves a 0.01 dex worst-case error, but the moment
-the budget tightens the worst case jumps to 0.22 dex at the sharp UV/Balmer
-feature — so if you care about that spike, pass `--max-err 0.05` rather than
-trusting the global R² (which stays at 0.9999 throughout).
+Read it as a budget-vs-accuracy curve: 20 % of the points (244) already
+nails this SED to a 0.015 dex worst-case error, and every extra slice of
+budget shaves the worst case down further (0.0035 dex at 40 %, 0.0002 at
+80 %). The `max_err` column is the direct guide to `--max-err`: if you can
+live with ~0.015 dex (≈ 3.5 %) error, `nrel = 0.2` is plenty; if you need
+0.001 dex, you'll want closer to `nrel = 0.6`.
 
 The reported `max_err` and `R^2` are always in the y-space the pipeline
 optimised — **dex when `log_y` is active**, linear otherwise — so the

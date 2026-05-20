@@ -1161,13 +1161,75 @@ def _simplify_plot(
             plt.close(fig)
 
 
+def _importance_order(
+    x: np.ndarray, y_work: np.ndarray, n_max: int
+) -> np.ndarray:
+    """
+    Rank sample indices by piecewise-linear reconstruction importance.
+
+    Greedy top-down refinement: start from the two endpoints and
+    repeatedly append the index whose current linear-interpolation error
+    is largest.  A length-``k`` prefix of the result is therefore the
+    ``k`` points a connect-the-dots reconstruction needs most — sharp
+    spikes and bends are grabbed first, redundant collinear samples last.
+    This is the same worst-error mechanism :func:`_simplify` uses for its
+    ``max_err`` insertions, so a prefix of length ``k`` is a principled
+    answer to "which ``k`` points matter most?".
+
+    Parameters
+    ----------
+    x : np.ndarray
+        Sorted (non-decreasing) x-values.
+    y_work : np.ndarray
+        Working-space y-values (``log10`` already applied when relevant).
+    n_max : int
+        Maximum prefix length to build (clamped to ``x.size``).
+
+    Returns
+    -------
+    np.ndarray
+        Index array of length ``min(n_max, x.size)``; element ``i`` is the
+        ``i``-th most important sample (the two endpoints come first).
+    """
+    n = x.size
+    n_max = min(int(n_max), n)
+    if n_max <= 0:
+        return np.empty(0, dtype=np.int64)
+
+    in_set = np.zeros(n, dtype=bool)
+    order = []
+    for seed in (0, n - 1):
+        if not in_set[seed] and len(order) < n_max:
+            in_set[seed] = True
+            order.append(seed)
+
+    # Each pass rebuilds the interpolant from the current set and adds the
+    # single worst-error sample.  ``np.flatnonzero`` returns the kept
+    # indices already sorted, so the interpolation x-grid stays monotone.
+    while len(order) < n_max:
+        sel = np.flatnonzero(in_set)
+        y_interp = np.interp(x, x[sel], y_work[sel])
+        err = np.abs(y_work - y_interp)
+        err[in_set] = -1.0
+        worst = int(np.argmax(err))
+        if err[worst] <= 0.0:
+            break                       # remaining points add no information
+        in_set[worst] = True
+        order.append(worst)
+
+    # If the greedy loop stopped early (curve already reproduced exactly),
+    # pad with the leftover indices so the requested count is still met.
+    if len(order) < n_max:
+        order.extend(np.flatnonzero(~in_set)[: n_max - len(order)].tolist())
+
+    return np.asarray(order, dtype=np.int64)
+
+
 def _simplify_diagnostic(
     x_orig: Union[np.ndarray, Sequence[float]],
     y_orig: Union[np.ndarray, Sequence[float]],
     nrels: Sequence[float] = (0.8, 0.6, 0.4, 0.2),
-    grad_inc: float = 1.0,
     log_y: Union[bool, str] = "auto",
-    dedup_tol: float = 1e-6,
     title: str = "Simplification diagnostic",
     plot: bool = False,
     save_path: Union[str, None] = None,
@@ -1176,17 +1238,24 @@ def _simplify_diagnostic(
     ylabel: str = r"$y$",
 ) -> list:
     """
-    Sweep a curve over several target output sizes and report fidelity.
+    Sweep a curve over several output sizes and report fidelity vs. size.
 
     A convenience tool for users who don't know what ``nmin`` or
     ``max_err`` to pass.  For each *relative* output size
-    ``nrel = n_output / n_original`` in ``nrels`` it runs :func:`_simplify`
-    with ``nmin = round(nrel * n_original)`` and tabulates the achieved
-    point count, worst-case error, and R² so the trade-off between size
-    and accuracy is visible at a glance.  The reported ``max_err`` is the
-    value you would pass to ``--max-err`` to *guarantee* that fidelity —
-    it is measured in the same y-space the pipeline optimised (log10-y
-    when ``log_y`` activates, linear otherwise).
+    ``nrel = n_output / n_original`` in ``nrels`` it keeps **exactly**
+    ``round(nrel * n_original)`` points — the most important ones, ranked
+    by :func:`_importance_order` — and tabulates the resulting worst-case
+    error and R² so the trade-off between size and accuracy is visible at
+    a glance.  Larger ``nrel`` therefore over-populates the curve with
+    progressively less important points; smaller ``nrel`` keeps only the
+    sharpest features.
+
+    Points are ranked by greedy worst-error refinement, the same
+    mechanism :func:`_simplify` uses for its ``max_err`` insertions, so
+    the tabulated ``max_err`` is a direct guide to the ``--max-err`` value
+    needed for a given fidelity.  It is reported in the same y-space the
+    pipeline optimises (log10-y when ``log_y`` activates, linear
+    otherwise), so the number drops straight into ``--max-err``.
 
     Parameters
     ----------
@@ -1194,13 +1263,12 @@ def _simplify_diagnostic(
         Original (full-resolution) curve.
     nrels : sequence of float, optional
         Target relative output sizes in ``(0, 1]``.  Default
-        ``(0.8, 0.6, 0.4, 0.2)``.  Note the *achieved* point count can
-        differ from the target — the feature pool, the ``nmin >= 100``
-        floor, and the collinearity prune all bound the result, so a
-        curve may saturate at a point count it cannot drop below without
-        losing fidelity.
-    grad_inc, log_y, dedup_tol
-        Forwarded to :func:`_simplify` for every sweep point.
+        ``(0.8, 0.6, 0.4, 0.2)``.  The achieved point count equals
+        ``round(nrel * n_original)`` exactly (clamped to ``[2, n_orig]``).
+    log_y : bool or "auto", optional
+        Selects the y-space the ranking and the reported metrics use.
+        ``"auto"`` (default) switches to log10-y when every ``y > 0`` and
+        the dynamic range exceeds two decades, matching :func:`_simplify`.
     title : str, optional
         Heading for the table and the grid plot.
     plot : bool, optional
@@ -1218,7 +1286,7 @@ def _simplify_diagnostic(
     Returns
     -------
     rows : list of dict
-        One dict per ``nrel`` with keys ``nrel``, ``nmin``, ``n_out``,
+        One dict per ``nrel`` with keys ``nrel``, ``n_out``,
         ``compression``, ``max_err``, ``r_squared`` (the last two in the
         working y-space), plus the full ``metrics`` dict and the
         ``x_simp`` / ``y_simp`` arrays for that level.
@@ -1231,6 +1299,12 @@ def _simplify_diagnostic(
     """
     x_o = np.asarray(x_orig, dtype=float)
     y_o = np.asarray(y_orig, dtype=float)
+
+    # Sort by x so the piecewise-linear interpolation is well defined.
+    if x_o.size > 1 and not np.all(np.diff(x_o) >= 0):
+        order = np.argsort(x_o, kind="stable")
+        x_o = x_o[order]
+        y_o = y_o[order]
     n_orig = x_o.size
 
     nrels = [float(r) for r in nrels]
@@ -1239,19 +1313,25 @@ def _simplify_diagnostic(
     if any(r <= 0.0 or r > 1.0 for r in nrels):
         raise ValueError(f"every nrel must lie in (0, 1]; got {nrels}")
 
-    # Pick the y-space the metrics should be reported in so that the
-    # tabulated max_err matches what ``--max-err`` expects (the pipeline
-    # bounds the error in log10-y space when log_y is active).
+    # Pick the y-space the ranking and metrics use so that the tabulated
+    # max_err matches what ``--max-err`` expects (the pipeline bounds the
+    # error in log10-y space when log_y is active).
     use_log = _auto_log_y(y_o, log_y)
     y_space = "log10-y (dex)" if use_log else "linear-y"
+    y_work = np.log10(y_o) if use_log else y_o
+
+    # Build one importance ranking up to the largest target, then a prefix
+    # of it gives the exact point set for every (smaller) nrel.
+    targets = {
+        r: max(2, min(n_orig, int(round(r * n_orig)))) for r in nrels
+    }
+    full_order = _importance_order(x_o, y_work, max(targets.values()))
 
     rows = []
     for nrel in nrels:
-        nmin = max(1, int(round(nrel * n_orig)))
-        x_s, y_s = _simplify(
-            x_o, y_o, nmin=nmin, grad_inc=grad_inc,
-            warn_below_r2=None, log_y=log_y, dedup_tol=dedup_tol,
-        )
+        n_target = targets[nrel]
+        idx = np.sort(full_order[:n_target])
+        x_s, y_s = x_o[idx], y_o[idx]
         m = _simplify_error(x_o, y_o, x_s, y_s)
         if use_log and not np.isnan(m["log_r_squared"]):
             max_err = m["log_max_dex_err"]
@@ -1261,7 +1341,6 @@ def _simplify_diagnostic(
             r2 = m["r_squared"]
         rows.append({
             "nrel": nrel,
-            "nmin": nmin,
             "n_out": m["n_simp"],
             "compression": m["compression"],
             "max_err": max_err,
@@ -2167,8 +2246,7 @@ def _simplify_cli():
         else:
             nrels = (0.8, 0.6, 0.4, 0.2)
         _simplify_diagnostic(
-            x, y, nrels=nrels, grad_inc=args.grad_inc,
-            log_y=log_y_arg, dedup_tol=args.dedup_tol,
+            x, y, nrels=nrels, log_y=log_y_arg,
             title=f"Diagnostic: {source_label}",
             plot=args.plot, save_path=args.plot_save, show=args.plot,
             **sb99_labels,
