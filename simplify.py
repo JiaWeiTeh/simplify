@@ -1216,10 +1216,12 @@ def _simplify_animate(
         panel (purely cosmetic — does not affect which frames are
         rendered or how ``_simplify`` selects points).  Default: 0.9.
     max_err : float or None, optional
-        When set, ``±max_err`` horizontal dashed lines are drawn on the
-        residual (middle) panel as a visual error band.  Cosmetic only —
-        the frames themselves are not constrained by it.  Default:
-        ``None``.
+        Forwarded to :func:`_simplify` so the full (final-frame) point
+        set is the worst-error-bounded one, and drawn as ``±max_err``
+        horizontal dashed lines on the residual (middle) panel.  The
+        greedy insertions enter the frame sweep in bisection order like
+        any other feature point, so the residual visibly converges into
+        the band as the animation progresses.  Default: ``None``.
     xlabel : str, optional
         X-axis label for the curve and residual panels.  Default:
         ``r"$x$"``.
@@ -1243,7 +1245,10 @@ def _simplify_animate(
 
     # --- Precompute simplification at increasing point counts ---
     # Start from 5 points and build up to the full feature-detected set.
-    x_full, y_full = _simplify(x_o, y_o, warn_below_r2=None)
+    # ``max_err`` is forwarded so the final frame is the same worst-error-
+    # bounded set the caller gets from _simplify; the greedy insertions
+    # then enter the frame sweep in bisection order with every other point.
+    x_full, y_full = _simplify(x_o, y_o, warn_below_r2=None, max_err=max_err)
     n_full = x_full.size
 
     # Generate log-spaced point counts from 5 up to full.
