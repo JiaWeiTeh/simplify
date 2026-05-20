@@ -67,11 +67,10 @@ interior meets the cool swept-up shell.
 |:---:|:---:|
 | ![Bubble temperature profile](demo_bubble_T.gif) | ![Bubble density profile](demo_bubble_n.gif) |
 
-These profiles are sampled on a **10 000-point** radial grid. Fewer than
-**60 points reproduce either curve to R² ≥ 0.999** — a ~170× reduction —
-and the first ~30 already clear that bar (bottom panel). The bend
-detector spends its budget on the sharp edge and barely touches the
-smooth interior, which is exactly the behaviour you want for
+These profiles are sampled on a **100-point** radial grid. About
+**32 points reproduce either curve to R² ≥ 0.999** (bottom panel, green
+line). The bend detector spends its budget on the sharp edge and barely
+touches the smooth interior, which is exactly the behaviour you want for
 astrophysical density/temperature/flux profiles.
 
 ## Contents
