@@ -527,12 +527,14 @@ def _simplify(
 
     5. **Greedy max-error reduction** (optional, ``max_err``)
        The arc-length pool gives a balanced output, but the worst-case
-       pointwise error is not bounded.  When ``max_err`` is set, a
-       greedy loop finds the original data point with the largest
+       vertical (fixed-x) error is not bounded.  When ``max_err`` is set,
+       a greedy loop finds the original data point with the largest
        interpolation error and inserts it into the retained set,
        repeating until every original sample agrees within ``max_err``.
-       Points inserted by this loop are protected from the subsequent
-       collinearity prune.
+       The tolerance lives in the working y-space, so its units depend
+       on ``log_y`` — which therefore must be passed explicitly (see the
+       ``max_err`` parameter).  Points inserted by this loop are
+       protected from the subsequent collinearity prune.
 
     6. **Collinearity prune**
        A vectorised sweep drops any point whose y value is within
@@ -614,7 +616,9 @@ def _simplify(
         - x.min)`` and ``|Δy| < dedup_tol * (y.max - y.min)``; the
         second of each such pair is dropped before any feature
         detection runs.  Default ``1e-6`` — far below any meaningful
-        feature scale.  Set to ``0`` to disable.
+        feature scale.  A ``UserWarning`` reports how many points were
+        collapsed whenever this fires.  Set to ``0`` to disable, or to a
+        smaller value to collapse fewer points.
 
     Returns
     -------
