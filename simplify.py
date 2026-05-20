@@ -736,9 +736,19 @@ def _simplify(
             keep[1:][stagnant] = False
             keep[0] = True
             keep[-1] = True
+            n_removed = int(keep.size - int(keep.sum()))
             x = x[keep]
             y = y[keep]
             y_raw = y_raw[keep]
+            warnings.warn(
+                f"dedup: collapsed {n_removed} near-duplicate point(s) "
+                f"(consecutive |Δx| and |Δy| both < dedup_tol={dedup_tol:g} "
+                f"× data range) before simplifying; {x.size} unique point(s) "
+                f"remain. Pass dedup_tol=0 to disable this, or a smaller "
+                f"value to collapse fewer points.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     # If the array is already short enough, return as-is.
     if nmin >= x.size:
@@ -1353,7 +1363,9 @@ def _simplify_animate(
         gridspec_kw={"height_ratios": [3, 1, 1], "hspace": 0.35},
     )
     margin = 0.05 * (np.nanmax(y_o) - np.nanmin(y_o) + 1e-30)
-    ax.set_xlim(x_o[0], x_o[-1])
+    x_margin = 0.03 * (float(x_o[-1]) - float(x_o[0]) + 1e-30)
+    x_lo, x_hi = float(x_o[0]) - x_margin, float(x_o[-1]) + x_margin
+    ax.set_xlim(x_lo, x_hi)
     ax.set_ylim(np.nanmin(y_o) - margin, np.nanmax(y_o) + margin)
     ax.set_ylabel(ylabel)
     ax.tick_params(labelbottom=False)
@@ -1375,7 +1387,7 @@ def _simplify_animate(
     # --- Residual subplot: (y - y_interp) vs x ---
     all_max_errs = np.array([s["max_err"] for s in steps])
     res_ceil = float(np.max(all_max_errs)) * 1.2
-    ax_res.set_xlim(x_o[0], x_o[-1])
+    ax_res.set_xlim(x_lo, x_hi)
     ax_res.set_ylim(-res_ceil, res_ceil)
     ax_res.set_xlabel(xlabel)
     ax_res.set_ylabel(r"$y - y_{\mathrm{interp}}$")
