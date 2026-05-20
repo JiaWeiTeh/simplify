@@ -7,7 +7,8 @@
 Heuristic downsampling of 1-D curves while preserving sharp bends, local
 extrema, and overall shape. Single file, no dependencies beyond NumPy.
 
-![Simplification demo](demo_nonoise.gif)
+<img src="demo_nonoise.gif" alt="Simplification demo" width="560">
+
 
 The animation progressively adds points to a 10 000-point random test
 curve (seed 42, no noise).  Three panels: the simplified overlay (top),
@@ -41,8 +42,12 @@ the worst-error locations until no point deviates by more than 0.05 dex
 
 ```bash
 python simplify.py --randomSB99 --animate demo_sb99_loose.gif --animate-duration 6 --r2-target 0.999
-python simplify.py --randomSB99 --animate demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05
+python simplify.py --randomSB99 --animate demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05 --log-y off
 ```
+
+(The SB99 `y` is already `log₁₀ L`, so `--log-y off` treats it linearly
+and `--max-err 0.05` means ≤ 0.05 dex. `--max-err` always needs an
+explicit `--log-y on|off` so its units are unambiguous.)
 
 ### In reality, curves are much simpler
 
@@ -62,9 +67,11 @@ interior meets the cool swept-up shell.
 |:---:|:---:|
 | ![Bubble temperature profile](demo_bubble_T.gif) | ![Bubble density profile](demo_bubble_n.gif) |
 
-About **30 points reproduce either profile to R² ≥ 0.999** (bottom
-panel). The bend detector spends its budget on the sharp edge and barely
-touches the smooth interior — exactly the behaviour you want for
+These profiles are sampled on a **10 000-point** radial grid. Fewer than
+**60 points reproduce either curve to R² ≥ 0.999** — a ~170× reduction —
+and the first ~30 already clear that bar (bottom panel). The bend
+detector spends its budget on the sharp edge and barely touches the
+smooth interior, which is exactly the behaviour you want for
 astrophysical density/temperature/flux profiles.
 
 ## Contents
@@ -115,7 +122,7 @@ python simplify.py --random --diagnostic                       # size/error swee
 python simplify.py --random --plot                             # comparison plot
 python simplify.py --random --animate demo.gif                 # animated GIF
 python simplify.py --randomSB99 --animate sb99.gif             # real SED data
-python simplify.py --randomSB99 --max-err 0.05 --animate sb99_tight.gif  # bounded error
+python simplify.py --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  # bounded error (--max-err needs explicit --log-y)
 ```
 
 ## Command line
@@ -124,7 +131,7 @@ python simplify.py --randomSB99 --max-err 0.05 --animate sb99_tight.gif  # bound
 python simplify.py data.csv -o reduced.csv                    # basic
 python simplify.py data.csv --metrics --plot                   # inspect quality
 python simplify.py data.csv --nmin 200                         # denser output
-python simplify.py data.csv --max-err 0.1                      # bound worst-case error
+python simplify.py data.csv --max-err 0.1 --log-y off          # bound worst-case error (--max-err needs explicit --log-y)
 python simplify.py data.csv --animate output.gif               # animation
 python simplify.py data.csv --grad-inc 0.5                     # lower curvature threshold
 ```
@@ -207,8 +214,10 @@ x_s, y_s = _simplify(x, y)
 # Higher nmin for denser output
 x_s, y_s = _simplify(x, y, nmin=200)
 
-# Bound the worst-case pointwise error
-x_s, y_s = _simplify(x, y, max_err=0.1)
+# Bound the worst-case vertical error.  max_err's units depend on the
+# y-space, so log_y must be explicit: 0.1 in y-units (log_y=False) or
+# 0.1 dex (log_y=True).
+x_s, y_s = _simplify(x, y, max_err=0.1, log_y=False)
 
 # Error metrics
 metrics = _simplify_error(x, y, x_s, y_s)
@@ -313,10 +322,13 @@ on the chord between their neighbours:
    x-span.
 
 5. **Greedy max-error reduction** — when `max_err` is set, a greedy
-   loop finds the original data point with the largest interpolation
-   error and inserts it into the retained set, repeating until the
-   worst-case absolute error drops below `max_err`.  Points inserted
-   by this loop are protected from the subsequent collinearity prune.
+   loop finds the original data point with the largest vertical
+   (fixed-x) interpolation error and inserts it into the retained set,
+   repeating until the worst-case absolute error drops below `max_err`.
+   The tolerance lives in the working y-space, so its units depend on
+   `log_y` (dex when on, raw y-units when off) — which is why `log_y`
+   must be set explicitly alongside `max_err`.  Points inserted by this
+   loop are protected from the subsequent collinearity prune.
 
 6. **Collinearity prune** — a vectorised sweep drops any point whose
    y value is within 0.1 % of the y-range of the chord between its
@@ -335,9 +347,9 @@ informational, the output is not changed.
 | `nmin` | 100 | Target minimum output samples for arc-length sampling |
 | `grad_inc` | 1.0 | Bend sensitivity (dimensionless, scale-invariant); fires when Menger curvature in normalised coords > `grad_inc` |
 | `warn_below_r2` | 0.9 | Soft R² quality threshold; a `UserWarning` is emitted when the output falls below this value.  Pass `None` to disable. |
-| `max_err` | `None` | Maximum allowed absolute interpolation error.  A greedy loop inserts points until the worst-case error drops below this value.  Operates in the same y-space as the pipeline (log10 when `log_y` is active, so `0.1` means ≤ 0.1 dex ≈ 26 % multiplicative). |
-| `log_y` | `"auto"` | Work in log-y space for every internal feature detector.  `"auto"` activates when every `y > 0` and `max(y)/min(y) > 100`; pass `True` / `False` to force. |
-| `dedup_tol` | `1e-6` | Stagnation tolerance for collapsing near-duplicate consecutive samples (ODE-solver artefact). Set to `0` to disable. |
+| `max_err` | `None` | Maximum allowed absolute **vertical** (fixed-x) interpolation error — the error you incur using the curve as a function of x. A greedy loop inserts points until no sample deviates by more than this. **Units follow `log_y`:** raw y-units when `log_y=False`, dex when `log_y=True` (so `0.1` is ≤ 0.1 dex ≈ 26 % in log mode). Because of this bond, `log_y` **must** be set explicitly (`True`/`False`) when `max_err` is used — `log_y="auto"` raises. |
+| `log_y` | `"auto"` | Work in log-y space for every internal feature detector.  `"auto"` activates when every `y > 0` and `max(y)/min(y) > 100`; pass `True` / `False` to force. Also fixes the units of `max_err`, so it cannot stay `"auto"` when `max_err` is set. |
+| `dedup_tol` | `1e-6` | Stagnation tolerance for collapsing near-duplicate consecutive samples (ODE-solver artefact). A `UserWarning` reports how many points were collapsed when it fires. Set to `0` to disable, or smaller to collapse fewer. |
 
 ## Multi-decade data (density, temperature, flux profiles)
 
