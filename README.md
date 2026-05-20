@@ -286,7 +286,7 @@ informational, the output is not changed.
 | `warn_below_r2` | 0.9 | Soft R² quality threshold; a `UserWarning` is emitted when the output falls below this value.  Pass `None` to disable. |
 | `max_err` | `None` | Maximum allowed absolute **vertical** (fixed-x) interpolation error — the error you incur using the curve as a function of x. A greedy loop inserts points until no sample deviates by more than this. **Units follow `log_y`:** raw y-units when `log_y=False`, dex when `log_y=True` (so `0.1` is ≤ 0.1 dex ≈ 26 % in log mode). Because of this bond, `log_y` **must** be set explicitly (`True`/`False`) when `max_err` is used — `log_y="auto"` raises. |
 | `log_y` | `"auto"` | Work in log-y space for every internal feature detector.  `"auto"` activates when every `y > 0` and `max(y)/min(y) > 100`; pass `True` / `False` to force. Also fixes the units of `max_err`, so it cannot stay `"auto"` when `max_err` is set. |
-| `dedup_tol` | `1e-6` | Stagnation tolerance for collapsing near-duplicate consecutive samples (ODE-solver artefact). Set to `0` to disable. |
+| `dedup_tol` | `1e-6` | Stagnation tolerance for collapsing near-duplicate consecutive samples (ODE-solver artefact). A `UserWarning` reports how many points were collapsed when it fires. Set to `0` to disable, or smaller to collapse fewer. |
 
 ## Multi-decade data (density, temperature, flux profiles)
 
