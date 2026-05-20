@@ -73,6 +73,7 @@ astrophysical density/temperature/flux profiles.
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Command line](#command-line)
+- [Choosing `nmin` and `max_err` (diagnostic mode)](#choosing-nmin-and-max_err-diagnostic-mode)
 - [Python API](#python-api)
 - [Input and output format](#input-and-output-format)
 - [How it works (the short version)](#how-it-works-the-short-version)
@@ -110,6 +111,7 @@ simplification process. Other quick demos:
 
 ```bash
 python simplify.py --random --metrics                          # error table
+python simplify.py --random --diagnostic                       # size/error sweep
 python simplify.py --random --plot                             # comparison plot
 python simplify.py --random --animate demo.gif                 # animated GIF
 python simplify.py --randomSB99 --animate sb99.gif             # real SED data
@@ -128,6 +130,66 @@ python simplify.py data.csv --grad-inc 0.5                     # lower curvature
 ```
 
 Run `python simplify.py --help` for all options.
+
+## Choosing `nmin` and `max_err` (diagnostic mode)
+
+Not sure how aggressively to downsample, or what `--max-err` to ask for?
+`--diagnostic` sweeps a handful of *relative* output sizes
+(`nrel = n_out / n_orig`) and prints what each one buys you — the achieved
+point count, the worst-case error, and the R². It runs instead of the
+normal conversion, so no output file is written.
+
+```bash
+python simplify.py --randomSB99 --diagnostic
+```
+
+```text
+  Diagnostic: Starburst99 SED at 5 Myr (1221 pts)
+  n_orig = 1221    working space: linear-y
+  --------------------------------------------------------
+   nrel    n_out   compression      max_err        R^2
+  --------------------------------------------------------
+   0.80      360          3.4x    1.009e-02   0.999997
+   0.60      359          3.4x    2.231e-01   0.999980
+   0.40      359          3.4x    2.231e-01   0.999980
+   0.20      358          3.4x    2.231e-01   0.999980
+  --------------------------------------------------------
+  max_err = worst-case |error| in linear-y space (pass as --max-err).
+```
+
+Two things jump out for this SED. First, the achieved `n_out` **saturates
+near 360** no matter how small a target you ask for — the feature pool and
+the collinearity prune won't drop below the points the curve genuinely
+needs, so chasing `nrel = 0.2` buys nothing over `0.4`. Second, the
+`max_err` column tells you exactly what to pass to `--max-err`: the default
+360-point result already leaves a 0.01 dex worst-case error, but the moment
+the budget tightens the worst case jumps to 0.22 dex at the sharp UV/Balmer
+feature — so if you care about that spike, pass `--max-err 0.05` rather than
+trusting the global R² (which stays at 0.9999 throughout).
+
+The reported `max_err` and `R^2` are always in the y-space the pipeline
+optimised — **dex when `log_y` is active**, linear otherwise — so the
+`max_err` value drops straight into `--max-err`. Customise the targets with
+`--nrels`, and add `--plot` (or `--plot-save PATH`) to draw a near-square
+grid of before/after panels (4 → 2×2, 5–6 → 2×3, 7–9 → 3×3, …):
+
+```bash
+python simplify.py --randomSB99 --diagnostic --nrels 0.9,0.5,0.25 --plot
+```
+
+![Diagnostic grid for the Starburst99 SED](demo_sb99_diagnostic.png)
+
+From Python the same sweep returns a list of per-`nrel` dicts (with the
+metrics and the simplified arrays) so you can drive parameter selection
+programmatically:
+
+```python
+from simplify import _load_sb99_5myr, _simplify_diagnostic
+
+x, y = _load_sb99_5myr()
+rows = _simplify_diagnostic(x, y, nrels=[0.6, 0.3], plot=False)
+print(rows[0]["n_out"], rows[0]["max_err"], rows[0]["r_squared"])
+```
 
 ## Python API
 
