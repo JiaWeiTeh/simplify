@@ -527,12 +527,14 @@ def _simplify(
 
     5. **Greedy max-error reduction** (optional, ``max_err``)
        The arc-length pool gives a balanced output, but the worst-case
-       pointwise error is not bounded.  When ``max_err`` is set, a
-       greedy loop finds the original data point with the largest
+       vertical (fixed-x) error is not bounded.  When ``max_err`` is set,
+       a greedy loop finds the original data point with the largest
        interpolation error and inserts it into the retained set,
        repeating until every original sample agrees within ``max_err``.
-       Points inserted by this loop are protected from the subsequent
-       collinearity prune.
+       The tolerance lives in the working y-space, so its units depend
+       on ``log_y`` — which therefore must be passed explicitly (see the
+       ``max_err`` parameter).  Points inserted by this loop are
+       protected from the subsequent collinearity prune.
 
     6. **Collinearity prune**
        A vectorised sweep drops any point whose y value is within
@@ -579,13 +581,19 @@ def _simplify(
         is 0.9.  When ``log_y`` is active the comparison is in log-y
         space.
     max_err : float or None, optional
-        Maximum allowed absolute interpolation error.  When set, a
-        greedy loop after the feature pool is built finds the original
-        data point with the largest interpolation error and inserts it
-        into the retained set, repeating until the worst-case error
-        drops below this value.  Operates on the same y-space as the
-        rest of the pipeline (log10 y when ``log_y`` is active).
-        ``None`` (default) disables the constraint.
+        Maximum allowed absolute **vertical** interpolation error
+        (``|y - y_interp|`` at fixed x — the error you incur when the
+        simplified curve is queried as a function of x).  When set, a
+        greedy loop finds the worst-fitting original point and inserts
+        it into the retained set, repeating until every sample agrees
+        within this value.  **Units follow ``log_y``:** raw y-units when
+        ``log_y=False``, or dex (log10 units) when ``log_y=True`` — so
+        ``0.1`` means "within 0.1 of your y-values" in linear mode but
+        "within 0.1 dex (≈ 26 %)" in log mode.  Because the meaning is
+        bonded to the space, ``log_y`` **must** be given explicitly
+        (``True``/``False``) whenever ``max_err`` is set;
+        ``log_y="auto"`` raises.  ``None`` (default) disables the
+        constraint.
     log_y : bool or "auto", optional
         Work in log-y space for every internal feature detector and for
         the residual / warning computations.  This is the recommended
@@ -598,6 +606,9 @@ def _simplify(
         peak-to-trough ratio exceeds two decades.  The output arrays
         always carry the caller's original ``y`` values at the selected
         indices — only the *internal* computations are log-transformed.
+        Note that ``log_y`` also fixes the units of ``max_err`` (see
+        above), so it cannot be left as ``"auto"`` when ``max_err`` is
+        used.
     dedup_tol : float, optional
         Stagnation tolerance for collapsing near-duplicate consecutive
         samples (a common ODE-solver artefact).  Two consecutive points
@@ -605,7 +616,9 @@ def _simplify(
         - x.min)`` and ``|Δy| < dedup_tol * (y.max - y.min)``; the
         second of each such pair is dropped before any feature
         detection runs.  Default ``1e-6`` — far below any meaningful
-        feature scale.  Set to ``0`` to disable.
+        feature scale.  A ``UserWarning`` reports how many points were
+        collapsed whenever this fires.  Set to ``0`` to disable, or to a
+        smaller value to collapse fewer points.
 
     Returns
     -------
@@ -687,6 +700,21 @@ def _simplify(
     """
     import warnings
 
+    # max_err is an absolute tolerance in the working y-space, and that
+    # space is exactly what ``log_y`` selects: raw y-units when log_y is
+    # off, dex (log10 units) when it is on.  So ``max_err`` and ``log_y``
+    # are bonded — the same number means different things in each space.
+    # Refuse to guess: when a max_err is given, the caller must pin the
+    # space explicitly rather than let log_y="auto" decide silently.
+    if max_err is not None and isinstance(log_y, str) and log_y == "auto":
+        raise ValueError(
+            "max_err is set but log_y='auto'. max_err is an absolute "
+            "tolerance whose units depend on the y-space: it is in raw "
+            "y-units when log_y=False, or in dex (log10 units) when "
+            "log_y=True. Because 'auto' could pick either silently, pass "
+            "log_y=True or log_y=False explicitly when using max_err."
+        )
+
     # --- Input validation ---
     x = np.asarray(x_arr, dtype=float)
     y_raw = np.asarray(y_arr, dtype=float)
@@ -736,9 +764,19 @@ def _simplify(
             keep[1:][stagnant] = False
             keep[0] = True
             keep[-1] = True
+            n_removed = int(keep.size - int(keep.sum()))
             x = x[keep]
             y = y[keep]
             y_raw = y_raw[keep]
+            warnings.warn(
+                f"dedup: collapsed {n_removed} near-duplicate point(s) "
+                f"(consecutive |Δx| and |Δy| both < dedup_tol={dedup_tol:g} "
+                f"× data range) before simplifying; {x.size} unique point(s) "
+                f"remain. Pass dedup_tol=0 to disable this, or a smaller "
+                f"value to collapse fewer points.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     # If the array is already short enough, return as-is.
     if nmin >= x.size:
@@ -1170,6 +1208,7 @@ def _simplify_animate(
     n_steps: int = 30,
     r2_target: float = 0.9,
     max_err: Union[float, None] = None,
+    log_y: Union[bool, str] = "auto",
     xlabel: str = r"$x$",
     ylabel: str = r"$y$",
 ) -> None:
@@ -1222,6 +1261,10 @@ def _simplify_animate(
         greedy insertions enter the frame sweep in bisection order like
         any other feature point, so the residual visibly converges into
         the band as the animation progresses.  Default: ``None``.
+    log_y : bool or "auto", optional
+        Forwarded to :func:`_simplify`.  Must be ``True``/``False`` (not
+        ``"auto"``) when ``max_err`` is set, since ``max_err``'s units
+        depend on it.  Default: ``"auto"``.
     xlabel : str, optional
         X-axis label for the curve and residual panels.  Default:
         ``r"$x$"``.
@@ -1248,7 +1291,9 @@ def _simplify_animate(
     # ``max_err`` is forwarded so the final frame is the same worst-error-
     # bounded set the caller gets from _simplify; the greedy insertions
     # then enter the frame sweep in bisection order with every other point.
-    x_full, y_full = _simplify(x_o, y_o, warn_below_r2=None, max_err=max_err)
+    x_full, y_full = _simplify(
+        x_o, y_o, warn_below_r2=None, max_err=max_err, log_y=log_y,
+    )
     n_full = x_full.size
 
     # Generate log-spaced point counts from 5 up to full.
@@ -1361,7 +1406,9 @@ def _simplify_animate(
     gs_bot = fig.add_gridspec(1, 1, top=0.30, bottom=0.09)
     ax_err = fig.add_subplot(gs_bot[0])
     margin = 0.05 * (np.nanmax(y_o) - np.nanmin(y_o) + 1e-30)
-    ax.set_xlim(x_o[0], x_o[-1])
+    x_margin = 0.03 * (float(x_o[-1]) - float(x_o[0]) + 1e-30)
+    x_lo, x_hi = float(x_o[0]) - x_margin, float(x_o[-1]) + x_margin
+    ax.set_xlim(x_lo, x_hi)
     ax.set_ylim(np.nanmin(y_o) - margin, np.nanmax(y_o) + margin)
     ax.set_ylabel(ylabel)
     ax.tick_params(labelbottom=False)
@@ -1383,7 +1430,7 @@ def _simplify_animate(
     # --- Residual subplot: (y - y_interp) vs x ---
     all_max_errs = np.array([s["max_err"] for s in steps])
     res_ceil = float(np.max(all_max_errs)) * 1.2
-    ax_res.set_xlim(x_o[0], x_o[-1])
+    ax_res.set_xlim(x_lo, x_hi)
     ax_res.set_ylim(-res_ceil, res_ceil)
     ax_res.set_xlabel(xlabel)
     ax_res.set_ylabel(r"$y - y_{\mathrm{interp}}$")
@@ -1700,14 +1747,17 @@ def _simplify_cli():
     --grad-inc : float
         Bend sensitivity (default: 1.0, dimensionless in normalised coords).
     --max-err : float
-        Maximum allowed absolute interpolation error.  A greedy loop
-        inserts original points at the worst-error locations until no
-        point deviates by more than this value.  Default: None.
+        Maximum allowed absolute vertical (fixed-x) interpolation error.
+        A greedy loop inserts original points at the worst-error
+        locations until no point deviates by more than this value.
+        Units follow --log-y (dex when ``on``, raw y-units when ``off``),
+        so an explicit --log-y on|off is required.  Default: None.
     --log-y : {auto, on, off}
         Work in log-y space for every internal feature detector.
         ``auto`` (default) switches to log when every y > 0 and
         max(y)/min(y) > 100; ``on`` forces it; ``off`` keeps the linear
-        path.
+        path.  Also fixes the units of --max-err, so it cannot be
+        ``auto`` when --max-err is given.
     --dedup-tol : float
         Stagnation tolerance for collapsing near-duplicate consecutive
         samples (common ODE-solver artefact).  Set to 0 to disable.
@@ -1845,10 +1895,12 @@ def _simplify_cli():
         "--max-err",
         type=float,
         default=None,
-        help="Maximum allowed absolute interpolation error.  A greedy "
-             "loop inserts original data points at the worst-error "
-             "locations until no point deviates by more than this value.  "
-             "Default: None (no constraint).",
+        help="Maximum allowed absolute vertical (fixed-x) interpolation "
+             "error.  A greedy loop inserts original data points at the "
+             "worst-error locations until no point deviates by more than "
+             "this value.  Units follow --log-y: dex when 'on', raw "
+             "y-units when 'off'; requires an explicit --log-y on|off "
+             "(not 'auto').  Default: None (no constraint).",
     )
     parser.add_argument(
         "--log-y",
@@ -1956,6 +2008,13 @@ def _simplify_cli():
 
     # --- Simplify ---
     log_y_arg = {"auto": "auto", "on": True, "off": False}[args.log_y]
+    if args.max_err is not None and log_y_arg == "auto":
+        parser.error(
+            "--max-err requires an explicit --log-y on|off, because "
+            "--max-err's units depend on the y-space: it is in dex when "
+            "--log-y on, or in raw y-units when --log-y off. Re-run with "
+            "--log-y on or --log-y off."
+        )
     x_out, y_out = _simplify(
         x, y, nmin=args.nmin, grad_inc=args.grad_inc,
         warn_below_r2=args.r2_target, max_err=args.max_err,
@@ -2019,6 +2078,7 @@ def _simplify_cli():
             title=f"Simplification of {source_label}",
             r2_target=args.r2_target,
             max_err=args.max_err,
+            log_y=log_y_arg,
             **anim_kwargs,
         )
 
