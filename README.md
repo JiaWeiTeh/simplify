@@ -44,8 +44,32 @@ python simplify.py --randomSB99 --animate demo_sb99_loose.gif --animate-duration
 python simplify.py --randomSB99 --animate demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05
 ```
 
+### In reality, curves are much simpler
+
+The random test curve at the top is a deliberate worst case — dense,
+noisy, and full of competing wiggles. The curves you *actually* want to
+downsample are usually far tamer. A common case is a radial
+temperature or density profile from a simulation: a smooth bulk with one
+or two sharp transitions and a lot of redundant samples in between.
+
+Below are the temperature `T(r)` and density `n(r)` profiles from the
+interior of a stellar-wind bubble (model `4e3_sfe001_n5e2_PL0`).
+Temperature falls gently then plunges at the bubble edge; density rises
+then spikes at the same radius — the contact discontinuity where the hot
+interior meets the cool swept-up shell.
+
+| temperature `log₁₀ T(r)` | density `log₁₀ n(r)` |
+|:---:|:---:|
+| ![Bubble temperature profile](demo_bubble_T.gif) | ![Bubble density profile](demo_bubble_n.gif) |
+
+About **30 points reproduce either profile to R² ≥ 0.999** (bottom
+panel). The bend detector spends its budget on the sharp edge and barely
+touches the smooth interior — exactly the behaviour you want for
+astrophysical density/temperature/flux profiles.
+
 ## Contents
 
+- [In reality, curves are much simpler](#in-reality-curves-are-much-simpler)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Command line](#command-line)
