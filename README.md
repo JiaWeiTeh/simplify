@@ -9,7 +9,7 @@ The animation progressively adds points to a 10 000-point random test
 curve (seed 42, no noise).  Three panels: the simplified overlay (top),
 the signed residual showing where the approximation over-/undershoots
 (middle), and RMSE vs point count on a log-log scale (bottom).  R² ≥ 0.9
-is first reached at **n = 57** (green dashed line).  Generated with:
+is first reached at **n = 34** (green dashed line).  Generated with:
 
 ```bash
 python simplify.py --random --seed 42 --no-noise --animate demo_nonoise.gif --animate-duration 5
@@ -17,10 +17,10 @@ python simplify.py --random --seed 42 --no-noise --animate demo_nonoise.gif --an
 
 ### Real data — Starburst99 5 Myr SED
 
-| `R² ≥ 0.999` | `R² ≥ 0.999` + `max_err = 0.05` |
+| default | `max_err = 0.05` |
 |:---:|:---:|
-| ![Starburst99 R²=0.999](demo_sb99_loose.gif) | ![Starburst99 R²=0.999 + max_err](demo_sb99_tight.gif) |
-| 1221 pts → **38** pts (32× compression) | 1221 pts → **105** pts (12× compression) |
+| ![Starburst99 default](demo_sb99_loose.gif) | ![Starburst99 + max_err](demo_sb99_tight.gif) |
+| 1221 pts → **358** pts (3.4× compression) | 1221 pts → **360** pts (3.4× compression) |
 
 The curve is the Starburst99 `LOG (TOTAL)` SED column at 5 Myr
 (instantaneous burst, Z = Z☉) — a real astrophysical spectrum spanning
@@ -28,9 +28,12 @@ The curve is the Starburst99 `LOG (TOTAL)` SED column at 5 Myr
 `log10(λ/Å)` and `y` is `log10(L_λ / (erg s⁻¹ Å⁻¹))`.  The left GIF
 shows the default simplification — the arc-length sampler distributes
 points symmetrically across the curve's normalised `[0, 1]²` length.
-The right GIF adds `max_err = 0.05`, which inserts points at the
-worst-error locations until no point deviates by more than 0.05 dex
-(≈ 12 %), yielding 105 points.  Generated with:
+Its global R² is excellent, yet the worst-case error still reaches
+0.22 dex at the sharp UV/Balmer-jump feature (the spike in the residual
+panel).  The right GIF adds `max_err = 0.05`, which inserts points at
+the worst-error locations until no point deviates by more than 0.05 dex
+(≈ 12 %); just two extra points pull the worst-case error down to
+0.01 dex.  Generated with:
 
 ```bash
 python simplify.py --randomSB99 --animate demo_sb99_loose.gif --animate-duration 6 --r2-target 0.999
