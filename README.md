@@ -93,6 +93,28 @@ print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:
 _simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 ```
 
+## How it works (the short version)
+
+You have a curve with thousands of points and you want to keep only the
+few that matter. Which ones matter? `simplify` answers that with four
+simple ideas:
+
+- **Keep the bends.** Where the curve turns sharply, you need a point to
+  capture the corner. Long straight stretches barely need any.
+- **Keep the peaks and valleys.** The high and low points are what your
+  eye remembers, so they always make the cut.
+- **Spread the rest out fairly.** Don't crowd every point into the busy
+  region — make sure every part of the curve gets some representation,
+  and rank features by how *important* they are so the big ones never
+  get dropped.
+- **Check the error and clean up.** Measure how far the simplified curve
+  strays from the original. Drop any leftover point that sits on a
+  straight line between its neighbours (it adds nothing), and optionally
+  keep adding points back until the worst gap is under a limit you set.
+
+That's it. The section below is the same four ideas spelled out
+precisely, with the math and the edge cases.
+
 ## Algorithm
 
 The input is sorted by x and near-duplicate consecutive samples are
