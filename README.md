@@ -161,19 +161,20 @@ python simplify.py --random --seed 67 --diagnostic
    nrel    n_out   compression      max_err        R^2
   --------------------------------------------------------
    0.80     8000          1.2x    3.056e-03   1.000000
-   0.60     6000          1.7x    8.548e-03   0.999997
-   0.40     4000          2.5x    1.232e-02   0.999987
-   0.20     2000          5.0x    2.392e-02   0.999957
+   0.30     3000          3.3x    1.573e-02   0.999976
+   0.10     1000         10.0x    2.921e-02   0.999922
+   0.01      100        100.0x    8.997e-02   0.999665
   --------------------------------------------------------
   max_err = worst-case |error| in linear-y space (pass as --max-err).
 ```
 
-Read it as a budget-vs-accuracy curve: even at `nrel = 0.2` (a 5×
-compression) the worst-case error is only 0.024 and R² is already 0.99996,
-and every extra slice of budget shaves the worst case down further (0.012
-at 40 %, 0.003 at 80 %). The `max_err` column is the direct guide to
-`--max-err`: if you can live with a ~0.024 worst-case error, `nrel = 0.2`
-is plenty; if you need 0.003, you'll want closer to `nrel = 0.8`.
+Read it as a budget-vs-accuracy curve: even at `nrel = 0.01` (100 points, a
+100× compression) R² is still 0.9997 and the worst-case error is 0.09, and
+every extra slice of budget shaves the worst case down further (0.029 at
+10 %, 0.016 at 30 %, 0.003 at 80 %). The `max_err` column is the direct
+guide to `--max-err`: if you can live with a ~0.03 worst-case error,
+`nrel = 0.1` (a 10× compression) is plenty; if you need 0.003, you'll want
+closer to `nrel = 0.8`.
 
 The reported `max_err` and `R^2` are always in the y-space the pipeline
 optimised — **dex when `log_y` is active**, linear otherwise — so the
