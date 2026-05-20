@@ -1,5 +1,9 @@
 # simplify
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
+![Dependencies](https://img.shields.io/badge/requires-numpy-blue.svg)
+
 Heuristic downsampling of 1-D curves while preserving sharp bends, local
 extrema, and overall shape. Single file, no dependencies beyond NumPy.
 
@@ -36,6 +40,37 @@ worst-error locations until no point deviates by more than 0.05 dex
 python simplify.py --randomSB99 --animate demo_sb99_loose.gif --animate-duration 6 --r2-target 0.999
 python simplify.py --randomSB99 --animate demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05
 ```
+
+## Contents
+
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Command line](#command-line)
+- [Python API](#python-api)
+- [Input and output format](#input-and-output-format)
+- [How it works (the short version)](#how-it-works-the-short-version)
+- [Algorithm](#algorithm)
+- [Parameters](#parameters)
+- [Multi-decade data](#multi-decade-data-density-temperature-flux-profiles)
+- [Limitations](#limitations)
+- [Dependencies](#dependencies)
+- [License](#license)
+- [Testimonials](#testimonials)
+
+## Installation
+
+`simplify` is a single file with no packaging — just clone the repo and
+run it in place:
+
+```bash
+git clone https://github.com/JiaWeiTeh/simplify.git
+cd simplify
+pip install numpy            # matplotlib too, for --plot / --animate
+python simplify.py --help
+```
+
+To use it from your own project, copy `simplify.py` next to your code (or
+add this directory to your `PYTHONPATH`) and `import simplify`.
 
 ## Quick start
 
@@ -92,6 +127,29 @@ print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:
 # Plot
 _simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 ```
+
+## Input and output format
+
+The CLI reads a plain two-column text file of `x y` pairs, one sample per
+line, sorted or unsorted (it is sorted internally by `x`):
+
+- **`.csv` files** are read comma-delimited; **any other extension** is
+  read whitespace-delimited.
+- Lines beginning with `#` are treated as comments and skipped, so a
+  header row like `# x,y` is fine.
+- Exactly two columns are expected: the first is `x`, the second is `y`.
+
+```text
+# x,y
+0.0,1.000
+0.1,0.995
+0.2,0.980
+...
+```
+
+Output is written with `--output/-o` (default `simplified_output.csv`) as
+a comma-delimited file with a `# x,y` header — the same format the reader
+accepts, so simplified files can be fed straight back in.
 
 ## How it works (the short version)
 
@@ -209,10 +267,31 @@ right scale by default.  When rendering, use `plt.semilogy` (or equivalent)
 on the simplified points — that interpolates between them in log-y
 space, which is what the algorithm's internal arc-length sampler assumed.
 
+## Limitations
+
+- **1-D functions only.** The input must be a single-valued curve `y(x)`.
+  Closed loops, self-intersecting paths, or multi-valued data are not
+  supported — points are sorted by `x` before processing.
+- **Heuristic, not optimal.** The point selection is a fast set of
+  heuristics, not a globally optimal solver (e.g. it does not minimise
+  point count for a given error bound the way Douglas–Peucker variants
+  do). It aims for visually faithful results, not provable minima.
+- **Tuned for smooth scientific curves.** Heavily noisy data can trip the
+  bend and sign-change detectors into keeping noise spikes; pre-smoothing
+  or a higher `grad_inc` helps.
+- **`log_y` needs positive data.** Log-space handling only activates when
+  every `y > 0`. Curves crossing zero stay in linear space.
+- **No streaming.** The whole curve is loaded and processed in memory; it
+  is not designed for out-of-core or online/streaming use.
+
 ## Dependencies
 
 - **numpy** (required)
 - **matplotlib** (optional — plotting and animation)
+
+## License
+
+Released under the [MIT License](LICENSE).
 
 ## Testimonials
 
