@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "simplify: heuristic downsampling of one-dimensional curves"
+abstract: "Heuristic downsampling of 1-D curves while preserving sharp bends, local extrema, and overall shape. Single file, requires only NumPy; matplotlib is optional, for plotting and animation."
+type: software
+authors:
+  - family-names: Teh
+    given-names: Jia Wei
+    orcid: "https://orcid.org/0000-0001-7863-5047"
+    affiliation: "Institut für Theoretische Astrophysik, Universität Heidelberg"
+version: "1.0.0"
+date-released: 2026-05-21
+url: "https://github.com/JiaWeiTeh/simplify"
+repository-code: "https://github.com/JiaWeiTeh/simplify"
+license: MIT
+keywords:
+  - curve simplification
+  - downsampling
+  - data compression
+  - Python
+  - astronomy
+  - spectral energy distribution
+# Once Zenodo mints a DOI (reserve one in the deposit form before publishing,
+# or it is created on first release), uncomment and fill in the concept DOI:
+# doi: "10.5281/zenodo.XXXXXXX"
