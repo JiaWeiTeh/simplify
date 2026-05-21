@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/JiaWeiTeh/simplify)](https://github.com/JiaWeiTeh/simplify/releases)
+[![DOI](https://zenodo.org/badge/1195354972.svg)](https://doi.org/10.5281/zenodo.20332764)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![Dependencies](https://img.shields.io/badge/requires-numpy-blue.svg)
 
@@ -91,6 +92,7 @@ astrophysical density/temperature/flux profiles.
 - [Multi-decade data](#multi-decade-data-density-temperature-flux-profiles)
 - [Limitations](#limitations)
 - [Dependencies](#dependencies)
+- [Citation](#citation)
 - [License](#license)
 - [Testimonials](#testimonials)
 
@@ -393,6 +395,14 @@ space, which is what the algorithm's internal arc-length sampler assumed.
 
 - **numpy** (required)
 - **matplotlib** (optional — plotting and animation)
+
+## Citation
+
+If you use `simplify` in your work, please cite it via its archived release.
+The DOI [`10.5281/zenodo.20332764`](https://doi.org/10.5281/zenodo.20332764)
+always resolves to the latest version; metadata lives in
+[`CITATION.cff`](CITATION.cff), and GitHub's "Cite this repository" button
+generates BibTeX/APA from it.
 
 ## License
 
