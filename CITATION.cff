@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "simplify: heuristic downsampling of one-dimensional curves"
-abstract: "Heuristic downsampling of 1-D curves while preserving sharp bends, local extrema, and overall shape. Single file, no dependencies beyond NumPy."
+abstract: "Heuristic downsampling of 1-D curves while preserving sharp bends, local extrema, and overall shape. Single file, requires only NumPy; matplotlib is optional, for plotting and animation."
 type: software
 authors:
   - family-names: Teh

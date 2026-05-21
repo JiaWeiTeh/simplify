@@ -1,11 +1,13 @@
 # simplify
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/JiaWeiTeh/simplify)](https://github.com/JiaWeiTeh/simplify/releases)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![Dependencies](https://img.shields.io/badge/requires-numpy-blue.svg)
 
 Heuristic downsampling of 1-D curves while preserving sharp bends, local
-extrema, and overall shape. Single file, no dependencies beyond NumPy.
+extrema, and overall shape. Single file, requires only NumPy — matplotlib is
+an optional dependency, needed only for the plotting and animation features.
 
 <img src="demo_nonoise.gif" alt="Simplification demo" width="560">
 
