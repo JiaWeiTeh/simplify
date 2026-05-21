@@ -26,16 +26,23 @@ from simplify import _auto_log_y, _importance_order, simplify_error  # noqa: E40
 N_POINTS = 40
 N_ORIG_LABEL = r"$n = 3\times10^4$"
 
+# 1 parsec in cm; the density column is stored as log10(number density per
+# pc^3), so subtracting 3*log10(pc/cm) converts it to log10(n / cm^-3).
+PC_CM = 3.0856775814913673e18
+PC3_TO_CM3_SHIFT = -3.0 * np.log10(PC_CM)
+
 PANELS = [
     {
         "file": ROOT / "data" / "bubble_T.dat",
         "ylabel": r"$\log_{10}\,T\;\mathrm{[K]}$",
         "title": "Temperature profile",
+        "log_shift": 0.0,
     },
     {
         "file": ROOT / "data" / "bubble_n.dat",
         "ylabel": r"$\log_{10}\,n\;\mathrm{[cm^{-3}]}$",
         "title": "Density profile",
+        "log_shift": PC3_TO_CM3_SHIFT,
     },
 ]
 
@@ -60,7 +67,7 @@ def main():
         ax_top, ax_res = axes[0, col], axes[1, col]
 
         data = np.loadtxt(panel["file"], comments="#")
-        r, y = data[:, 0], data[:, 1]
+        r, y = data[:, 0], data[:, 1] + panel["log_shift"]
         order = np.argsort(r, kind="stable")
         r, y = r[order], y[order]
 
@@ -80,7 +87,7 @@ def main():
         ax_top.legend(loc="best", fontsize=8)
 
         # --- bottom: absolute residual on a log y-axis ---
-        ax_res.plot(r, abs_res, "-", color="tab:orange", lw=0.8)
+        ax_res.plot(r, abs_res, "-", color="tab:blue", lw=0.8)
         ax_res.set_yscale("log")
         ax_res.set_xlabel(r"radius $r$ [pc]")
         ax_res.set_ylabel(r"$|y - y_{\mathrm{interp}}|$")
