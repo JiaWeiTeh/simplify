@@ -9,7 +9,7 @@ Heuristic downsampling of 1-D curves while preserving sharp bends, local
 extrema, and overall shape. Single file, requires only NumPy — matplotlib is
 an optional dependency, needed only for the plotting and animation features.
 
-<img src="demo_nonoise.gif" alt="Simplification demo" width="560">
+<img src="media/demo_nonoise.gif" alt="Simplification demo" width="560">
 
 
 The animation progressively adds points to a 10 000-point random test
@@ -19,14 +19,14 @@ the signed residual showing where the approximation over-/undershoots
 is first reached at **n = 34** (green dashed line).  Generated with:
 
 ```bash
-python simplify.py --random --seed 42 --no-noise --animate demo_nonoise.gif --animate-duration 5
+python simplify.py --random --seed 42 --no-noise --animate media/demo_nonoise.gif --animate-duration 5
 ```
 
 ### Real data — Starburst99 5 Myr SED
 
 | default | `max_err = 0.05` |
 |:---:|:---:|
-| ![Starburst99 default](demo_sb99_loose.gif) | ![Starburst99 + max_err](demo_sb99_tight.gif) |
+| ![Starburst99 default](media/demo_sb99_loose.gif) | ![Starburst99 + max_err](media/demo_sb99_tight.gif) |
 | 1221 pts → **358** pts (3.4× compression) | 1221 pts → **360** pts (3.4× compression) |
 
 The curve is the Starburst99 `LOG (TOTAL)` SED column at 5 Myr
@@ -43,8 +43,8 @@ the worst-error locations until no point deviates by more than 0.05 dex
 0.01 dex.  Generated with:
 
 ```bash
-python simplify.py --randomSB99 --animate demo_sb99_loose.gif --animate-duration 6 --r2-target 0.999
-python simplify.py --randomSB99 --animate demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05 --log-y off
+python simplify.py --randomSB99 --animate media/demo_sb99_loose.gif --animate-duration 6 --r2-target 0.999
+python simplify.py --randomSB99 --animate media/demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05 --log-y off
 ```
 
 (The SB99 `y` is already `log₁₀ L`, so `--log-y off` treats it linearly
@@ -67,7 +67,7 @@ interior meets the cool swept-up shell.
 
 | temperature `log₁₀ T(r)` | density `log₁₀ n(r)` |
 |:---:|:---:|
-| ![Bubble temperature profile](demo_bubble_T.gif) | ![Bubble density profile](demo_bubble_n.gif) |
+| ![Bubble temperature profile](media/demo_bubble_T.gif) | ![Bubble density profile](media/demo_bubble_n.gif) |
 
 These profiles are sampled on a **10 000-point** radial grid. Fewer than
 **60 points reproduce either curve to R² ≥ 0.999** — a ~170× reduction —
@@ -188,17 +188,17 @@ grid of before/after panels (4 → 2×2, 5–6 → 2×3, 7–9 → 3×3, …):
 python simplify.py --random --seed 67 --diagnostic --nrels 0.9,0.5,0.25 --plot
 ```
 
-![Diagnostic grid for the random seed-67 curve](demo_random_diagnostic.png)
+![Diagnostic grid for the random seed-67 curve](media/demo_random_diagnostic.png)
 
 From Python the same sweep returns a list of per-`nrel` dicts (with the
 metrics and the simplified arrays) so you can drive parameter selection
 programmatically:
 
 ```python
-from simplify import _random_test_curve, _simplify_diagnostic
+from simplify import random_test_curve, simplify_diagnostic
 
-x, y = _random_test_curve(seed=67)
-rows = _simplify_diagnostic(x, y, nrels=[0.6, 0.3], plot=False)
+x, y = random_test_curve(seed=67)
+rows = simplify_diagnostic(x, y, nrels=[0.6, 0.3], plot=False)
 print(rows[0]["n_out"], rows[0]["max_err"], rows[0]["r_squared"])
 ```
 
@@ -206,28 +206,28 @@ print(rows[0]["n_out"], rows[0]["max_err"], rows[0]["r_squared"])
 
 ```python
 import numpy as np
-from simplify import _simplify, _simplify_error, _simplify_plot
+from simplify import simplify, simplify_error, simplify_plot
 
 x = np.linspace(0, 10, 10000)
 y = np.sin(x) + 0.5 * np.sin(5 * x)
 
 # Simplify (default warn_below_r2 = 0.9)
-x_s, y_s = _simplify(x, y)
+x_s, y_s = simplify(x, y)
 
 # Higher nmin for denser output
-x_s, y_s = _simplify(x, y, nmin=200)
+x_s, y_s = simplify(x, y, nmin=200)
 
 # Bound the worst-case vertical error.  max_err's units depend on the
 # y-space, so log_y must be explicit: 0.1 in y-units (log_y=False) or
 # 0.1 dex (log_y=True).
-x_s, y_s = _simplify(x, y, max_err=0.1, log_y=False)
+x_s, y_s = simplify(x, y, max_err=0.1, log_y=False)
 
 # Error metrics
-metrics = _simplify_error(x, y, x_s, y_s)
+metrics = simplify_error(x, y, x_s, y_s)
 print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:.1f}x")
 
 # Plot
-_simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
+simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 ```
 
 ## Input and output format
@@ -365,7 +365,7 @@ internal detector onto `log10(y)` when the input is strictly positive
 and spans ≥ 2 decades; the output arrays still contain the caller's
 raw `y` values.
 
-The `_simplify_error` helper and the CLI's `--metrics` flag report
+The `simplify_error` helper and the CLI's `--metrics` flag report
 `log_r_squared`, `log_rms_err`, and `log_max_dex_err` whenever `y` is
 strictly positive, so quality assessments on such data are in the
 right scale by default.  When rendering, use `plt.semilogy` (or equivalent)
