@@ -1,5 +1,9 @@
-"""Generate a two-panel (1x2) vector PDF of the bubble temperature and
-density profiles, each simplified to exactly n = 40 points.
+"""Generate a two-column vector PDF of the bubble temperature and density
+profiles, each simplified to exactly n = 40 points.
+
+Layout: 2 columns (temperature | density) x 2 rows.
+  - top row    : the profile (full curve + the 40 simplified points)
+  - bottom row : |y - y_interp|, the absolute residual, on a log y-axis
 
 The 40 points are the most important ones under the same greedy
 worst-error ranking that ``simplify_diagnostic`` uses, so a length-40
@@ -20,17 +24,18 @@ sys.path.insert(0, str(ROOT))
 from simplify import _auto_log_y, _importance_order, simplify_error  # noqa: E402
 
 N_POINTS = 40
+N_ORIG_LABEL = r"$n = 3\times10^4$"
 
 PANELS = [
     {
         "file": ROOT / "data" / "bubble_T.dat",
         "ylabel": r"$\log_{10}\,T\;\mathrm{[K]}$",
-        "tag": "temperature",
+        "title": "Temperature profile",
     },
     {
         "file": ROOT / "data" / "bubble_n.dat",
         "ylabel": r"$\log_{10}\,n\;\mathrm{[cm^{-3}]}$",
-        "tag": "density",
+        "title": "Density profile",
     },
 ]
 
@@ -46,26 +51,42 @@ def simplify_n(x, y, n):
 
 def main():
     plt.style.use(str(ROOT / "simplify.mplstyle"))
-    fig, axes = plt.subplots(1, 2, figsize=(8.0, 3.4), layout="constrained")
+    fig, axes = plt.subplots(
+        2, 2, figsize=(8.0, 5.4), sharex="col",
+        gridspec_kw={"height_ratios": [3, 1]}, layout="constrained",
+    )
 
-    for ax, panel in zip(axes, PANELS):
+    for col, panel in enumerate(PANELS):
+        ax_top, ax_res = axes[0, col], axes[1, col]
+
         data = np.loadtxt(panel["file"], comments="#")
         r, y = data[:, 0], data[:, 1]
         order = np.argsort(r, kind="stable")
         r, y = r[order], y[order]
 
         r_s, y_s, m = simplify_n(r, y, N_POINTS)
+        abs_res = np.abs(y - np.interp(r, r_s, y_s))
 
-        ax.plot(r, y, "-", color="0.75", lw=0.9, zorder=1, label="original")
-        ax.plot(r_s, y_s, "o-", color="tab:red", ms=3.0, lw=0.8, zorder=2,
-                label=f"simplified ($n={m['n_simp']}$)")
-        ax.set_xlabel(r"radius $r$ [pc]")
-        ax.set_ylabel(panel["ylabel"])
-        ax.set_title(
-            rf"$n = {m['n_simp']}$,   $R^2 = {m['r_squared']:.5f}$",
+        # --- top: profile ---
+        ax_top.plot(r, y, "-", color="0.75", lw=0.9, zorder=1,
+                    label=rf"original ({N_ORIG_LABEL})")
+        ax_top.plot(r_s, y_s, "o-", color="tab:red", ms=3.0, lw=0.8, zorder=2,
+                    label=rf"simplified ($n={m['n_simp']}$)")
+        ax_top.set_ylabel(panel["ylabel"])
+        ax_top.set_title(
+            rf"{panel['title']}   ($R^2 = {m['r_squared']:.5f}$)",
             fontsize=10,
         )
-        ax.legend(loc="best", fontsize=8)
+        ax_top.legend(loc="best", fontsize=8)
+
+        # --- bottom: absolute residual on a log y-axis ---
+        ax_res.plot(r, abs_res, "-", color="tab:orange", lw=0.8)
+        ax_res.set_yscale("log")
+        ax_res.set_xlabel(r"radius $r$ [pc]")
+        ax_res.set_ylabel(r"$|y - y_{\mathrm{interp}}|$")
+        positive = abs_res[abs_res > 0]
+        if positive.size:
+            ax_res.set_ylim(positive.min() * 0.5, abs_res.max() * 2.0)
 
     out = ROOT / "media" / "bubble_profiles_n40.pdf"
     fig.savefig(out)
