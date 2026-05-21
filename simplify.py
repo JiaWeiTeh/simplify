@@ -9,21 +9,31 @@ uniformity).  No dependencies beyond numpy / matplotlib / stdlib.
 
 Functions
 ---------
-_simplify          Core downsampling algorithm.
-_simplify_error    Error metrics (RMSE, MAE, R², compression, …).
-_simplify_diagnostic  Sweep target sizes; tabulate max_err / R² (+ grid plot).
-_simplify_plot     Static before/after comparison plot.
-_simplify_animate  Animated GIF/MP4 of the simplification process.
+simplify          Core downsampling algorithm.
+simplify_error    Error metrics (RMSE, MAE, R², compression, …).
+simplify_diagnostic  Sweep target sizes; tabulate max_err / R² (+ grid plot).
+simplify_plot     Static before/after comparison plot.
+simplify_animate  Animated GIF/MP4 of the simplification process.
 _peak_prominences  1-D topological persistence (O(n log n)).
-_random_test_curve Generate a random curve that exercises all strategies.
-_load_sb99_5myr    Bundled Starburst99 SED at 5 Myr (log λ vs log L_λ).
-_simplify_cli      Command-line interface (reads two-column text files).
+random_test_curve Generate a random curve that exercises all strategies.
+load_sb99_5myr    Bundled Starburst99 SED at 5 Myr (log λ vs log L_λ).
+main      Command-line interface (reads two-column text files).
 """
 
 from pathlib import Path
 from typing import Tuple, Union, Sequence
 
 import numpy as np
+
+__all__ = [
+    "simplify",
+    "simplify_error",
+    "simplify_plot",
+    "simplify_diagnostic",
+    "simplify_animate",
+    "random_test_curve",
+    "load_sb99_5myr",
+]
 
 # Path to the bundled matplotlib style file.
 _STYLE_FILE = Path(__file__).parent / "simplify.mplstyle"
@@ -441,7 +451,7 @@ def _x_uniform_coverage_idx(
     return np.unique(pool_idx[np.where(pick_hi, hi, lo)])
 
 
-def _simplify(
+def simplify(
     x_arr: Union[np.ndarray, Sequence[float]],
     y_arr: Union[np.ndarray, Sequence[float]],
     nmin: int = 100,
@@ -638,17 +648,17 @@ def _simplify(
     **1. Basic usage with numpy arrays:**
 
     >>> import numpy as np
-    >>> from simplify import _simplify
+    >>> from simplify import simplify
     >>> x = np.linspace(0, 10, 5000)
     >>> y = np.sin(x) + 0.5 * np.sin(5 * x)
-    >>> x_s, y_s = _simplify(x, y, nmin=100)
+    >>> x_s, y_s = simplify(x, y, nmin=100)
     >>> print(f"Reduced {x.size} points -> {x_s.size} points")
 
     **2. Works with plain Python lists (no numpy needed at call site):**
 
     >>> x = [0.0, 0.1, 0.2, 0.3, ..., 10.0]
     >>> y = [1.2, 1.5, 1.3, 1.8, ..., 0.9]
-    >>> x_s, y_s = _simplify(x, y)
+    >>> x_s, y_s = simplify(x, y)
 
     **3. Tuning sensitivity with ``grad_inc``:**
 
@@ -656,14 +666,14 @@ def _simplify(
     Higher ``grad_inc`` = keep fewer points (only the sharpest features).
 
     >>> # Sensitive: keep points where Menger curvature > 0.5
-    >>> x_s, y_s = _simplify(x, y, nmin=100, grad_inc=0.5)
+    >>> x_s, y_s = simplify(x, y, nmin=100, grad_inc=0.5)
     >>> # Aggressive: only keep the sharpest bends (curvature > 2.0)
-    >>> x_s, y_s = _simplify(x, y, nmin=100, grad_inc=2.0)
+    >>> x_s, y_s = simplify(x, y, nmin=100, grad_inc=2.0)
 
     **4. Reading from a file and simplifying:**
 
     >>> data = np.loadtxt("profile.csv", delimiter=",")
-    >>> x_s, y_s = _simplify(data[:, 0], data[:, 1], nmin=200)
+    >>> x_s, y_s = simplify(data[:, 0], data[:, 1], nmin=200)
     >>> np.savetxt("profile_simplified.csv", np.column_stack([x_s, y_s]),
     ...            delimiter=",", header="x,y")
 
@@ -672,7 +682,7 @@ def _simplify(
     >>> import matplotlib.pyplot as plt
     >>> x = np.linspace(0, 4 * np.pi, 10000)
     >>> y = np.exp(-0.1 * x) * np.sin(x)
-    >>> x_s, y_s = _simplify(x, y, nmin=150)
+    >>> x_s, y_s = simplify(x, y, nmin=150)
     >>> plt.plot(x, y, 'k-', alpha=0.3, label=f"original ({x.size} pts)")
     >>> plt.plot(x_s, y_s, 'ro-', ms=2, label=f"simplified ({x_s.size} pts)")
     >>> plt.legend()
@@ -680,15 +690,15 @@ def _simplify(
 
     **6. Checking simplification quality:**
 
-    >>> x_s, y_s = _simplify(x, y, nmin=100)
-    >>> metrics = _simplify_error(x, y, x_s, y_s)
+    >>> x_s, y_s = simplify(x, y, nmin=100)
+    >>> metrics = simplify_error(x, y, x_s, y_s)
     >>> print(f"RMSE = {metrics['rms_err']:.2e}")
     >>> print(f"R²   = {metrics['r_squared']:.6f}")
     >>> print(f"Compression = {metrics['compression']:.1f}x")
 
     **7. Visualising before/after with error panel:**
 
-    >>> _simplify_plot(x, y, x_s, y_s, title="My data", save_path="comparison.png")
+    >>> simplify_plot(x, y, x_s, y_s, title="My data", save_path="comparison.png")
 
     **8. CLI usage (no scripting needed):**
 
@@ -725,8 +735,15 @@ def _simplify(
         return x, y_raw
     if x.size != y_raw.size:
         raise ValueError(
-            f"_simplify(): x and y must have the same length. "
+            f"simplify(): x and y must have the same length. "
             f"Got {x.size} and {y_raw.size}"
+        )
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y_raw)):
+        raise ValueError(
+            "simplify(): x and y must contain only finite values; got "
+            "NaN or inf. Non-finite samples corrupt the curvature, "
+            "arc-length, and error computations. Strip or interpolate "
+            "them before calling simplify()."
         )
 
     # --- Sort by x if not already monotone ---
@@ -783,6 +800,15 @@ def _simplify(
     if nmin >= x.size:
         return x, y_raw
     # Enforce a floor of 100 samples so the output is always useful.
+    if int(nmin) < 100:
+        warnings.warn(
+            f"simplify(): requested nmin={int(nmin)} is below the "
+            f"100-sample floor and has been raised to 100. The output "
+            f"cannot be reduced below 100 points; pass nmin>=100 to set "
+            f"the target explicitly.",
+            UserWarning,
+            stacklevel=2,
+        )
     nmin = max(int(nmin), 100)
 
     # =====================================================================
@@ -941,7 +967,7 @@ def _simplify(
             r2 = 1.0 - float(np.sum((y - y_interp) ** 2)) / ss_tot
             if r2 < warn_below_r2:
                 warnings.warn(
-                    f"_simplify: R² = {r2:.4f} below warn_below_r2 = "
+                    f"simplify: R² = {r2:.4f} below warn_below_r2 = "
                     f"{warn_below_r2:.4f} (n_out={merged.size}).  "
                     f"Consider raising nmin or lowering grad_inc.",
                     UserWarning,
@@ -955,7 +981,7 @@ def _simplify(
     return x[merged], y_raw[merged]
 
 
-def _simplify_error(
+def simplify_error(
     x_orig: Union[np.ndarray, Sequence[float]],
     y_orig: Union[np.ndarray, Sequence[float]],
     x_simp: Union[np.ndarray, Sequence[float]],
@@ -973,7 +999,7 @@ def _simplify_error(
     x_orig, y_orig : array-like
         Original (full-resolution) curve.
     x_simp, y_simp : array-like
-        Simplified (downsampled) curve, as returned by ``_simplify()``.
+        Simplified (downsampled) curve, as returned by ``simplify()``.
 
     Returns
     -------
@@ -1025,8 +1051,8 @@ def _simplify_error(
     --------
     >>> x = np.linspace(0, 10, 5000)
     >>> y = np.sin(x)
-    >>> x_s, y_s = _simplify(x, y)
-    >>> metrics = _simplify_error(x, y, x_s, y_s)
+    >>> x_s, y_s = simplify(x, y)
+    >>> metrics = simplify_error(x, y, x_s, y_s)
     >>> print(f"RMSE = {metrics['rms_err']:.2e}, R² = {metrics['r_squared']:.6f}")
     """
     x_o = np.asarray(x_orig, dtype=float)
@@ -1077,7 +1103,7 @@ def _simplify_error(
     # metrics is *log-linear* — i.e. a straight line between samples
     # in ``(x, log10 y)`` — because that is how matplotlib's log-y
     # plots render segments and is also how the log-y path of
-    # _simplify judges quality internally.  All four fields are set to
+    # simplify judges quality internally.  All four fields are set to
     # NaN when the log transform is undefined (any y <= 0).
     log_keys = ("log_r_squared", "log_rms_err", "log_max_dex_err",
                 "log_mean_dex_err")
@@ -1100,7 +1126,7 @@ def _simplify_error(
     return metrics
 
 
-def _simplify_plot(
+def simplify_plot(
     x_orig: Union[np.ndarray, Sequence[float]],
     y_orig: Union[np.ndarray, Sequence[float]],
     x_simp: Union[np.ndarray, Sequence[float]],
@@ -1138,8 +1164,8 @@ def _simplify_plot(
     --------
     >>> x = np.linspace(0, 10, 5000)
     >>> y = np.sin(x) + 0.5 * np.sin(5 * x)
-    >>> x_s, y_s = _simplify(x, y, nmin=100)
-    >>> _simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
+    >>> x_s, y_s = simplify(x, y, nmin=100)
+    >>> simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
     """
     import matplotlib.pyplot as plt
 
@@ -1150,7 +1176,7 @@ def _simplify_plot(
         y_s = np.asarray(y_simp, dtype=float)
 
         # Compute metrics and residual.
-        metrics = _simplify_error(x_o, y_o, x_s, y_s)
+        metrics = simplify_error(x_o, y_o, x_s, y_s)
         residual = y_o - np.interp(x_o, x_s, y_s)
 
         fig, (ax1, ax2) = plt.subplots(
@@ -1210,7 +1236,7 @@ def _importance_order(
     is largest.  A length-``k`` prefix of the result is therefore the
     ``k`` points a connect-the-dots reconstruction needs most — sharp
     spikes and bends are grabbed first, redundant collinear samples last.
-    This is the same worst-error mechanism :func:`_simplify` uses for its
+    This is the same worst-error mechanism :func:`simplify` uses for its
     ``max_err`` insertions, so a prefix of length ``k`` is a principled
     answer to "which ``k`` points matter most?".
 
@@ -1263,7 +1289,7 @@ def _importance_order(
     return np.asarray(order, dtype=np.int64)
 
 
-def _simplify_diagnostic(
+def simplify_diagnostic(
     x_orig: Union[np.ndarray, Sequence[float]],
     y_orig: Union[np.ndarray, Sequence[float]],
     nrels: Sequence[float] = (0.8, 0.3, 0.1, 0.01),
@@ -1289,7 +1315,7 @@ def _simplify_diagnostic(
     sharpest features.
 
     Points are ranked by greedy worst-error refinement, the same
-    mechanism :func:`_simplify` uses for its ``max_err`` insertions, so
+    mechanism :func:`simplify` uses for its ``max_err`` insertions, so
     the tabulated ``max_err`` is a direct guide to the ``--max-err`` value
     needed for a given fidelity.  It is reported in the same y-space the
     pipeline optimises (log10-y when ``log_y`` activates, linear
@@ -1306,7 +1332,7 @@ def _simplify_diagnostic(
     log_y : bool or "auto", optional
         Selects the y-space the ranking and the reported metrics use.
         ``"auto"`` (default) switches to log10-y when every ``y > 0`` and
-        the dynamic range exceeds two decades, matching :func:`_simplify`.
+        the dynamic range exceeds two decades, matching :func:`simplify`.
     title : str, optional
         Heading for the table and the grid plot.
     plot : bool, optional
@@ -1331,9 +1357,9 @@ def _simplify_diagnostic(
 
     Examples
     --------
-    >>> x, y = _load_sb99_5myr()
-    >>> rows = _simplify_diagnostic(x, y)            # prints a table
-    >>> rows = _simplify_diagnostic(x, y, nrels=[0.5, 0.25], plot=True)
+    >>> x, y = load_sb99_5myr()
+    >>> rows = simplify_diagnostic(x, y)            # prints a table
+    >>> rows = simplify_diagnostic(x, y, nrels=[0.5, 0.25], plot=True)
     """
     x_o = np.asarray(x_orig, dtype=float)
     y_o = np.asarray(y_orig, dtype=float)
@@ -1370,7 +1396,7 @@ def _simplify_diagnostic(
         n_target = targets[nrel]
         idx = np.sort(full_order[:n_target])
         x_s, y_s = x_o[idx], y_o[idx]
-        m = _simplify_error(x_o, y_o, x_s, y_s)
+        m = simplify_error(x_o, y_o, x_s, y_s)
         if use_log and not np.isnan(m["log_r_squared"]):
             max_err = m["log_max_dex_err"]
             r2 = m["log_r_squared"]
@@ -1453,7 +1479,7 @@ def _simplify_diagnostic(
     return rows
 
 
-def _simplify_animate(
+def simplify_animate(
     x_orig: Union[np.ndarray, Sequence[float]],
     y_orig: Union[np.ndarray, Sequence[float]],
     save_path: str = "simplify.gif",
@@ -1473,7 +1499,7 @@ def _simplify_animate(
     The animation builds the simplified curve up from 5 points to the
     full feature-detected set.  The mandatory set (prominent extrema plus
     the x-uniform coverage skeleton) follows the same rule as
-    :func:`_simplify` and is present from the first frame; the remaining
+    :func:`simplify` and is present from the first frame; the remaining
     feature points are added in hierarchical-bisection order so that
     frames are strictly nested (each frame is a superset of the previous
     one).  Three panels are shown:
@@ -1508,16 +1534,16 @@ def _simplify_animate(
     r2_target : float, optional
         R² reference level drawn as a vertical line in the bottom
         panel (purely cosmetic — does not affect which frames are
-        rendered or how ``_simplify`` selects points).  Default: 0.9.
+        rendered or how ``simplify`` selects points).  Default: 0.9.
     max_err : float or None, optional
-        Forwarded to :func:`_simplify` so the full (final-frame) point
+        Forwarded to :func:`simplify` so the full (final-frame) point
         set is the worst-error-bounded one, and drawn as ``±max_err``
         horizontal dashed lines on the residual (middle) panel.  The
         greedy insertions enter the frame sweep in bisection order like
         any other feature point, so the residual visibly converges into
         the band as the animation progresses.  Default: ``None``.
     log_y : bool or "auto", optional
-        Forwarded to :func:`_simplify`.  Must be ``True``/``False`` (not
+        Forwarded to :func:`simplify`.  Must be ``True``/``False`` (not
         ``"auto"``) when ``max_err`` is set, since ``max_err``'s units
         depend on it.  Default: ``"auto"``.
     xlabel : str, optional
@@ -1530,7 +1556,7 @@ def _simplify_animate(
     --------
     >>> x = np.linspace(0, 10, 5000)
     >>> y = np.sin(x) + 0.5 * np.sin(5 * x)
-    >>> _simplify_animate(x, y, "demo.gif", duration=6.0)
+    >>> simplify_animate(x, y, "demo.gif", duration=6.0)
     """
     import matplotlib.pyplot as plt
     from matplotlib.animation import FuncAnimation
@@ -1544,9 +1570,9 @@ def _simplify_animate(
     # --- Precompute simplification at increasing point counts ---
     # Start from 5 points and build up to the full feature-detected set.
     # ``max_err`` is forwarded so the final frame is the same worst-error-
-    # bounded set the caller gets from _simplify; the greedy insertions
+    # bounded set the caller gets from simplify; the greedy insertions
     # then enter the frame sweep in bisection order with every other point.
-    x_full, y_full = _simplify(
+    x_full, y_full = simplify(
         x_o, y_o, warn_below_r2=None, max_err=max_err, log_y=log_y,
     )
     n_full = x_full.size
@@ -1565,7 +1591,7 @@ def _simplify_animate(
     full_idx = np.sort(np.searchsorted(x_o, x_full))
 
     # Prominent extrema form the mandatory set (same 5%-of-y-range
-    # rule as _simplify).
+    # rule as simplify).
     grad_o = np.gradient(y_o)
     sign_idx = np.where(np.diff(np.sign(grad_o)) != 0)[0]
     y_rng = float(np.nanmax(y_o) - np.nanmin(y_o))
@@ -1613,7 +1639,7 @@ def _simplify_animate(
         x_s, y_s = x_o[trial], y_o[trial]
         y_interp = np.interp(x_o, x_s, y_s)
         residual = y_o - y_interp
-        m = _simplify_error(x_o, y_o, x_s, y_s)
+        m = simplify_error(x_o, y_o, x_s, y_s)
         steps.append({
             "npts": m["n_simp"],
             "x": x_s,
@@ -1624,7 +1650,7 @@ def _simplify_animate(
             "max_err": float(np.abs(residual).max()),
         })
 
-    # Deduplicate steps with same npts (can happen when _simplify returns
+    # Deduplicate steps with same npts (can happen when simplify returns
     # more points than nmin).
     seen = set()
     unique_steps = []
@@ -1811,7 +1837,7 @@ def _simplify_animate(
 # =============================================================================
 # Random test-curve generator
 # =============================================================================
-def _random_test_curve(
+def random_test_curve(
     npts: int = 10_000,
     seed: Union[int, None] = None,
     noise: bool = True,
@@ -1820,7 +1846,7 @@ def _random_test_curve(
     Generate a random 1-D curve that exercises every simplification strategy.
 
     The curve is built from several additive components, each designed to
-    trigger a different branch of ``_simplify``:
+    trigger a different branch of ``simplify``:
 
     - **Smooth base** – sum of 2–4 sinusoids with random frequencies,
       amplitudes and phases.  Produces gentle curvature and many local
@@ -1859,9 +1885,9 @@ def _random_test_curve(
 
     Examples
     --------
-    >>> x, y = _random_test_curve(npts=8000, seed=42)
-    >>> x_s, y_s = _simplify(x, y, nmin=120)
-    >>> _simplify_plot(x, y, x_s, y_s, title="random test curve")
+    >>> x, y = random_test_curve(npts=8000, seed=42)
+    >>> x_s, y_s = simplify(x, y, nmin=120)
+    >>> simplify_plot(x, y, x_s, y_s, title="random test curve")
     """
     rng = np.random.default_rng(seed)
     x = np.linspace(0.0, 1.0, npts)
@@ -1933,7 +1959,7 @@ def _random_test_curve(
     return x, y
 
 
-def _load_sb99_5myr() -> Tuple[np.ndarray, np.ndarray]:
+def load_sb99_5myr() -> Tuple[np.ndarray, np.ndarray]:
     """
     Load the bundled Starburst99 SED at 5 Myr.
 
@@ -1959,8 +1985,8 @@ def _load_sb99_5myr() -> Tuple[np.ndarray, np.ndarray]:
 
     Examples
     --------
-    >>> x, y = _load_sb99_5myr()
-    >>> x_s, y_s = _simplify(x, y)
+    >>> x, y = load_sb99_5myr()
+    >>> x_s, y_s = simplify(x, y)
     """
     data = np.loadtxt(_SB99_5MYR_FILE, comments="#")
     wavelength = data[:, 0]
@@ -1971,9 +1997,9 @@ def _load_sb99_5myr() -> Tuple[np.ndarray, np.ndarray]:
 # =============================================================================
 # CLI entry point
 # =============================================================================
-def _simplify_cli():
+def main():
     """
-    Command-line interface for the _simplify curve downsampling function.
+    Command-line interface for the simplify curve downsampling function.
 
     Reads x and y data from a two-column text file (whitespace- or
     comma-separated), runs the simplification algorithm, and writes the
@@ -2061,7 +2087,7 @@ def _simplify_cli():
     import argparse
 
     parser = argparse.ArgumentParser(
-        prog="_simplify",
+        prog="simplify",
         description=(
             "Downsample a two-column (x, y) data file while preserving "
             "sharp features, local extrema, and overall curve shape."
@@ -2254,7 +2280,7 @@ def _simplify_cli():
     if args.random and args.randomSB99:
         parser.error("--random and --randomSB99 are mutually exclusive.")
     if args.random:
-        x, y = _random_test_curve(
+        x, y = random_test_curve(
             npts=args.random_npts, seed=args.seed, noise=args.noise,
         )
         seed_str = f", seed={args.seed}" if args.seed is not None else ""
@@ -2264,15 +2290,24 @@ def _simplify_cli():
         )
         print(f"Generated {source_label}.")
     elif args.randomSB99:
-        x, y = _load_sb99_5myr()
+        x, y = load_sb99_5myr()
         source_label = f"Starburst99 SED at 5 Myr ({x.size} pts)"
         print(f"Loaded {source_label}.")
     elif args.infile is not None:
         # Try comma-delimited first, fall back to whitespace.
         try:
-            data = np.loadtxt(args.infile, delimiter=",", comments="#")
-        except ValueError:
-            data = np.loadtxt(args.infile, comments="#")
+            try:
+                data = np.loadtxt(args.infile, delimiter=",", comments="#")
+            except ValueError:
+                data = np.loadtxt(args.infile, comments="#")
+        except (FileNotFoundError, OSError) as exc:
+            raise SystemExit(f"Error: could not open '{args.infile}': {exc}")
+        except ValueError as exc:
+            raise SystemExit(
+                f"Error: could not parse '{args.infile}' as a numeric "
+                f"two-column table (comma- or whitespace-delimited, "
+                f"'#' comments): {exc}"
+            )
 
         if data.ndim != 2 or data.shape[1] < 2:
             raise SystemExit(
@@ -2309,7 +2344,7 @@ def _simplify_cli():
                 )
         else:
             nrels = (0.8, 0.3, 0.1, 0.01)
-        _simplify_diagnostic(
+        simplify_diagnostic(
             x, y, nrels=nrels, log_y=log_y_arg,
             title=f"Diagnostic: {source_label}",
             plot=args.plot, save_path=args.plot_save, show=args.plot,
@@ -2325,7 +2360,7 @@ def _simplify_cli():
             "--log-y on, or in raw y-units when --log-y off. Re-run with "
             "--log-y on or --log-y off."
         )
-    x_out, y_out = _simplify(
+    x_out, y_out = simplify(
         x, y, nmin=args.nmin, grad_inc=args.grad_inc,
         warn_below_r2=args.r2_target, max_err=args.max_err,
         log_y=log_y_arg, dedup_tol=args.dedup_tol,
@@ -2346,7 +2381,7 @@ def _simplify_cli():
 
     # --- Optional: print error metrics ---
     if args.metrics or args.plot or args.plot_save:
-        metrics = _simplify_error(x, y, x_out, y_out)
+        metrics = simplify_error(x, y, x_out, y_out)
 
     if args.metrics:
         print()
@@ -2367,7 +2402,7 @@ def _simplify_cli():
 
     # --- Optional: plot ---
     if args.plot or args.plot_save:
-        _simplify_plot(
+        simplify_plot(
             x, y, x_out, y_out,
             title=f"Simplification of {source_label}",
             save_path=args.plot_save,
@@ -2376,7 +2411,7 @@ def _simplify_cli():
 
     # --- Optional: animation ---
     if args.animate:
-        _simplify_animate(
+        simplify_animate(
             x, y,
             save_path=args.animate,
             fps=args.animate_fps,
@@ -2395,11 +2430,11 @@ if __name__ == "__main__":
     # If command-line arguments are given, run the file-based CLI.
     # Otherwise, run a quick interactive demo so users can see how it works.
     if len(sys.argv) > 1:
-        _simplify_cli()
+        main()
     else:
         # ---- Quick demo ----
         print("=" * 60)
-        print("  _simplify() — interactive demo")
+        print("  simplify() — interactive demo")
         print("=" * 60)
         print()
 
@@ -2409,10 +2444,10 @@ if __name__ == "__main__":
         # Add a sharp spike at the midpoint to test feature detection.
         y[2500] += 3.0
 
-        x_s, y_s = _simplify(x, y, nmin=100)
+        x_s, y_s = simplify(x, y, nmin=100)
 
         # Show error metrics.
-        metrics = _simplify_error(x, y, x_s, y_s)
+        metrics = simplify_error(x, y, x_s, y_s)
 
         print(f"  Original  : {metrics['n_orig']} points")
         print(f"  Simplified: {metrics['n_simp']} points")
@@ -2431,15 +2466,15 @@ if __name__ == "__main__":
         print()
         print("  To use in your own script:")
         print()
-        print("    from simplify import _simplify")
-        print("    from simplify import _simplify_error")
-        print("    from simplify import _simplify_plot")
-        print("    from simplify import _simplify_animate")
+        print("    from simplify import simplify")
+        print("    from simplify import simplify_error")
+        print("    from simplify import simplify_plot")
+        print("    from simplify import simplify_animate")
         print()
-        print("    x_s, y_s = _simplify(x, y, nmin=100)")
-        print("    metrics  = _simplify_error(x, y, x_s, y_s)")
-        print("    _simplify_plot(x, y, x_s, y_s)")
-        print("    _simplify_animate(x, y, 'simplify.gif')")
+        print("    x_s, y_s = simplify(x, y, nmin=100)")
+        print("    metrics  = simplify_error(x, y, x_s, y_s)")
+        print("    simplify_plot(x, y, x_s, y_s)")
+        print("    simplify_animate(x, y, 'simplify.gif')")
         print()
         print("  Or from the command line:")
         print()
