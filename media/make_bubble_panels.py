@@ -58,14 +58,22 @@ def simplify_n(x, y, n):
 
 def main():
     plt.style.use(str(ROOT / "simplify.mplstyle"))
-    fig, axes = plt.subplots(
-        2, 2, figsize=(8.0, 5.4), sharex="col",
-        gridspec_kw={"height_ratios": [3, 1]}, layout="constrained",
-    )
+    fig = plt.figure(figsize=(5.4, 8.4))
 
-    for col, panel in enumerate(PANELS):
-        ax_top, ax_res = axes[0, col], axes[1, col]
+    # One column, two profile groups stacked vertically; each group is a
+    # tall profile panel with a short residual subrow tucked beneath it.
+    gs_top = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.06,
+                              top=0.95, bottom=0.57)
+    gs_bot = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.06,
+                              top=0.46, bottom=0.07)
+    pairs = []
+    for gs in (gs_top, gs_bot):
+        ax_top = fig.add_subplot(gs[0])
+        ax_res = fig.add_subplot(gs[1], sharex=ax_top)
+        ax_top.tick_params(labelbottom=False)
+        pairs.append((ax_top, ax_res))
 
+    for (ax_top, ax_res), panel in zip(pairs, PANELS):
         data = np.loadtxt(panel["file"], comments="#")
         r, y = data[:, 0], data[:, 1] + panel["log_shift"]
         order = np.argsort(r, kind="stable")
