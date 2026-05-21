@@ -10,6 +10,7 @@ authors:
     affiliation: "Institut für Theoretische Astrophysik, Universität Heidelberg"
 version: "1.0.0"
 date-released: 2026-05-21
+doi: "10.5281/zenodo.20332764"
 url: "https://github.com/JiaWeiTeh/simplify"
 repository-code: "https://github.com/JiaWeiTeh/simplify"
 license: MIT
@@ -20,6 +21,3 @@ keywords:
   - Python
   - astronomy
   - spectral energy distribution
-# Once Zenodo mints a DOI (reserve one in the deposit form before publishing,
-# or it is created on first release), uncomment and fill in the concept DOI:
-# doi: "10.5281/zenodo.XXXXXXX"
