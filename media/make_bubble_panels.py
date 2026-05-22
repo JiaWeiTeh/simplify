@@ -100,7 +100,7 @@ def main():
         abs_res = np.abs(y - np.interp(r, r_s, y_s))
 
         # --- top: profile (physical units on a log axis) ---
-        ax_top.plot(r, 10.0 ** y, "-", color=C_ORIG, lw=1.0, zorder=1,
+        ax_top.plot(r, 10.0 ** y, "-", color=C_ORIG, lw=2.0, zorder=1,
                     label=rf"original ({N_ORIG_LABEL})")
         ax_top.plot(r_s, 10.0 ** y_s, "-", color="k", lw=1.2, zorder=3,
                     marker="o", ms=3.5, markerfacecolor=C_SIMP,
