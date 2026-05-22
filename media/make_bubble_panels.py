@@ -17,6 +17,7 @@ reconstruction.  Run from the repository root:
 
     python media/make_bubble_panels.py
 """
+import shutil
 import sys
 from pathlib import Path
 
@@ -28,9 +29,10 @@ sys.path.insert(0, str(ROOT))
 
 from simplify import _auto_log_y, _importance_order, simplify_error  # noqa: E402
 
+STYLE_FILE = ROOT / "media" / "trinity.mplstyle"
+
 N_POINTS = 40
 N_ORIG_LABEL = r"$n = 3\times10^4$"
-_LEGEND_FONTSIZE = 9
 
 # Colourblind-friendly (Wong) palette, matching the reference figures.
 C_ORIG = "0.6"        # full-resolution curve (faint background)
@@ -57,9 +59,9 @@ PANELS = [
         "file": ROOT / "data" / "bubble_n.dat",
         "ylabel": r"$n(r)$ [cm$^{-3}$]",
         "res_ylabel": r"$|\Delta \log n|$",
-        "legend_loc": "lower right",
-        "r2_xy": (0.03, 0.95),
-        "r2_align": ("left", "top"),
+        "legend_loc": "upper left",
+        "r2_xy": (0.97, 0.05),
+        "r2_align": ("right", "bottom"),
         "log_shift": PC3_TO_CM3_SHIFT,
     },
 ]
@@ -75,7 +77,11 @@ def simplify_n(x, y, n):
 
 
 def main():
-    fig = plt.figure(figsize=(4.2, 6.8))
+    plt.style.use(str(STYLE_FILE))
+    if shutil.which("latex") is None:
+        plt.rcParams["text.usetex"] = False   # graceful fallback
+
+    fig = plt.figure(figsize=(4.6, 7.4))
 
     # Two profile groups, each a tall profile panel over a short residual
     # subrow; a gap between the gridspecs separates the two quantities.
@@ -117,15 +123,13 @@ def main():
         ax_top.set_xscale("log")
         ax_top.set_yscale("log")
         ax_top.grid(False)
-        ax_top.tick_params(labelbottom=False)
+        ax_top.tick_params(which="both", labelbottom=False)
         ax_top.set_ylabel(panel["ylabel"])
         ax_top.text(*panel["r2_xy"], rf"$R^2 = {m['r_squared']:.5f}$",
                     transform=ax_top.transAxes,
                     ha=panel["r2_align"][0], va=panel["r2_align"][1],
-                    fontsize=_LEGEND_FONTSIZE, color="0.3")
-        ax_top.legend(loc=panel["legend_loc"], handlelength=1.6,
-                      labelspacing=0.3, fontsize=_LEGEND_FONTSIZE,
-                      framealpha=0.9)
+                    color="0.3")
+        ax_top.legend(loc=panel["legend_loc"])
 
         # --- bottom: absolute residual (dex) on a log y-axis ---
         ax_res.plot(r, abs_res, "-", color=C_RESID, lw=1.0)
@@ -134,12 +138,16 @@ def main():
         ax_res.set_xscale("log")
         ax_res.set_yscale("log")
         ax_res.grid(False)
+        ax_res.tick_params(which="both", labelbottom=False)
         ax_res.set_ylabel(panel["res_ylabel"])
         positive = abs_res[abs_res > 0]
         if positive.size:
             ax_res.set_ylim(positive.min() * 0.5, abs_res.max() * 2.0)
 
-    pairs[-1][1].set_xlabel(r"$r$ [pc]")
+    # X-axis numbers only on the very bottom panel.
+    ax_bottom = pairs[-1][1]
+    ax_bottom.tick_params(which="both", labelbottom=True)
+    ax_bottom.set_xlabel(r"$r$ [pc]")
     ax_T.set_xlim(r.min() * 0.95, r.max() * 1.05)
 
     out = ROOT / "media" / "bubble_profiles_n40.pdf"
