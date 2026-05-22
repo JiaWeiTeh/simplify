@@ -395,15 +395,7 @@ space, which is what the algorithm's internal arc-length sampler assumed.
 
 - **numpy** (required)
 - **matplotlib** (optional — plotting and animation)
-
-## Citation
-
-If you use `simplify` in your work, please cite it via its archived release.
-The DOI [`10.5281/zenodo.20332764`](https://doi.org/10.5281/zenodo.20332764)
-always resolves to the latest version; metadata lives in
-[`CITATION.cff`](CITATION.cff), and GitHub's "Cite this repository" button
-generates BibTeX/APA from it.
-
+  
 ## License
 
 Released under the [MIT License](LICENSE).
