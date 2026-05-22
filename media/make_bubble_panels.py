@@ -81,9 +81,9 @@ def main():
     # Two profile groups, each a tall profile panel over a short residual
     # subrow; a gap between the gridspecs separates the two quantities.
     gs_top = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.05,
-                              top=0.985, bottom=0.55)
+                              top=0.985, bottom=0.535)
     gs_bot = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.05,
-                              top=0.47, bottom=0.075)
+                              top=0.495, bottom=0.075)
 
     ax_T = fig.add_subplot(gs_top[0])
     pairs = [(ax_T, fig.add_subplot(gs_top[1], sharex=ax_T))]
