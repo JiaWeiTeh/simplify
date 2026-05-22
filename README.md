@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/JiaWeiTeh/simplify)](https://github.com/JiaWeiTeh/simplify/releases)
-[![DOI](https://zenodo.org/badge/1195354972.svg)](https://doi.org/10.5281/zenodo.20332764)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20332764.svg)](https://doi.org/10.5281/zenodo.20332764)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![Dependencies](https://img.shields.io/badge/requires-numpy-blue.svg)
 
