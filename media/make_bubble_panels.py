@@ -38,7 +38,6 @@ N_ORIG_LABEL = r"$n = 3\times10^4$"
 C_ORIG = "0.6"        # full-resolution curve (faint background)
 C_SIMP = "#d62728"    # the n=40 simplification (the hero)
 C_RESID = "#0072B2"   # residual subrow
-C_VLINE = "0.25"      # bubble-edge reference line
 
 # 1 parsec in cm; the density column is stored as log10(number density per
 # pc^3), so subtracting 3*log10(pc/cm) converts it to log10(n / cm^-3).
@@ -51,8 +50,6 @@ PANELS = [
         "ylabel": r"$T(r)$ [K]",
         "res_ylabel": r"$|\Delta \log T|$",
         "legend_loc": "lower left",
-        "r2_xy": (0.97, 0.95),
-        "r2_align": ("right", "top"),
         "log_shift": 0.0,
     },
     {
@@ -60,8 +57,6 @@ PANELS = [
         "ylabel": r"$n(r)$ [cm$^{-3}$]",
         "res_ylabel": r"$|\Delta \log n|$",
         "legend_loc": "upper left",
-        "r2_xy": (0.97, 0.05),
-        "r2_align": ("right", "bottom"),
         "log_shift": PC3_TO_CM3_SHIFT,
     },
 ]
@@ -95,13 +90,6 @@ def main():
     pairs.append((fig.add_subplot(gs_bot[0], sharex=ax_T),
                   fig.add_subplot(gs_bot[1], sharex=ax_T)))
 
-    # Bubble-edge radius: steepest gradient of log T (the contact
-    # discontinuity); shared by both quantities, drawn on every panel.
-    t_data = np.loadtxt(PANELS[0]["file"], comments="#")
-    t_order = np.argsort(t_data[:, 0], kind="stable")
-    r_t, logT = t_data[t_order, 0], t_data[t_order, 1]
-    r_edge = float(r_t[np.argmax(np.abs(np.gradient(logT, np.log(r_t))))])
-
     for (ax_top, ax_res), panel in zip(pairs, PANELS):
         data = np.loadtxt(panel["file"], comments="#")
         r, y = data[:, 0], data[:, 1] + panel["log_shift"]
@@ -118,24 +106,14 @@ def main():
                     marker="o", ms=3.5, markerfacecolor=C_SIMP,
                     markeredgecolor="black", mew=0.6,
                     label=rf"simplified ($n={m['n_simp']}$)")
-        ax_top.axvline(r_edge, color=C_VLINE, lw=1.2, ls="--", alpha=0.7,
-                       zorder=2)
-        ax_top.set_xscale("log")
         ax_top.set_yscale("log")
         ax_top.grid(False)
         ax_top.tick_params(which="both", labelbottom=False)
         ax_top.set_ylabel(panel["ylabel"])
-        ax_top.text(*panel["r2_xy"], rf"$R^2 = {m['r_squared']:.5f}$",
-                    transform=ax_top.transAxes,
-                    ha=panel["r2_align"][0], va=panel["r2_align"][1],
-                    color="0.3")
         ax_top.legend(loc=panel["legend_loc"])
 
         # --- bottom: absolute residual (dex) on a log y-axis ---
         ax_res.plot(r, abs_res, "-", color=C_RESID, lw=1.0)
-        ax_res.axvline(r_edge, color=C_VLINE, lw=1.2, ls="--", alpha=0.7,
-                       zorder=2)
-        ax_res.set_xscale("log")
         ax_res.set_yscale("log")
         ax_res.grid(False)
         ax_res.tick_params(which="both", labelbottom=False)
@@ -148,7 +126,8 @@ def main():
     ax_bottom = pairs[-1][1]
     ax_bottom.tick_params(which="both", labelbottom=True)
     ax_bottom.set_xlabel(r"$r$ [pc]")
-    ax_T.set_xlim(r.min() * 0.95, r.max() * 1.05)
+    x_margin = 0.03 * (r.max() - r.min())
+    ax_T.set_xlim(r.min() - x_margin, r.max() + x_margin)
 
     out = ROOT / "media" / "bubble_profiles_n40.pdf"
     fig.savefig(out, bbox_inches="tight")
