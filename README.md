@@ -25,26 +25,18 @@ python simplify.py --random --seed 42 --no-noise --animate media/demo_nonoise.gi
 
 ### Real data — Starburst99 5 Myr SED
 
-| default | `max_err = 0.05` |
-|:---:|:---:|
-| ![Starburst99 default](media/demo_sb99_loose.gif) | ![Starburst99 + max_err](media/demo_sb99_tight.gif) |
-| 1221 pts → **358** pts (3.4× compression) | 1221 pts → **360** pts (3.4× compression) |
+![Starburst99 + max_err](media/demo_sb99_tight.gif)
 
-The curve is the Starburst99 `LOG (TOTAL)` SED column at 5 Myr
-(instantaneous burst, Z = Z☉) — a real astrophysical spectrum spanning
-91 Å to 1.6 × 10⁶ Å in wavelength and ~6 dex in luminosity.  `x` is
-`log10(λ/Å)` and `y` is `log10(L_λ / (erg s⁻¹ Å⁻¹))`.  The left GIF
-shows the default simplification — the arc-length sampler distributes
-points symmetrically across the curve's normalised `[0, 1]²` length.
-Its global R² is excellent, yet the worst-case error still reaches
-0.22 dex at the sharp UV/Balmer-jump feature (the spike in the residual
-panel).  The right GIF adds `max_err = 0.05`, which inserts points at
-the worst-error locations until no point deviates by more than 0.05 dex
-(≈ 12 %); just two extra points pull the worst-case error down to
-0.01 dex.  Generated with:
+1221 pts → **360** pts (3.4× compression).  The curve is the
+Starburst99 `LOG (TOTAL)` SED column at 5 Myr (instantaneous burst,
+Z = Z☉) — a real astrophysical spectrum spanning 91 Å to 1.6 × 10⁶ Å
+in wavelength and ~6 dex in luminosity.  `x` is `log10(λ/Å)` and `y`
+is `log10(L_λ / (erg s⁻¹ Å⁻¹))`.  The GIF uses `max_err = 0.05`, which
+inserts points at the worst-error locations until no sample deviates
+by more than 0.05 dex (≈ 12 %) — the green dashed line in the
+log-residual panel.  Generated with:
 
 ```bash
-python simplify.py --randomSB99 --animate media/demo_sb99_loose.gif --animate-duration 6 --r2-target 0.999
 python simplify.py --randomSB99 --animate media/demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05 --log-y off
 ```
 
