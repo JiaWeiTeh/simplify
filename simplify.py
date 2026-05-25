@@ -1622,10 +1622,15 @@ def simplify_animate(
         queue = nq
     bisection_pool = full_idx[order[:count]]
 
-    # Prominent extrema ∪ x-uniform coverage skeleton, so gradual
-    # low-amplitude regions keep a representative point in every frame.
+    # Endpoints ∪ prominent extrema ∪ x-uniform coverage skeleton, so
+    # gradual low-amplitude regions keep a representative point in every
+    # frame and the curve's two endpoints (which simplify() always pins)
+    # are present from frame 1 instead of popping in once optional fills.
     coverage_idx = _x_uniform_coverage_idx(x_o, full_idx, _COVERAGE_CHUNKS)
-    mandatory = np.unique(np.concatenate([prominent_idx, coverage_idx]))
+    endpoints_idx = np.array([full_idx[0], full_idx[-1]], dtype=int)
+    mandatory = np.unique(
+        np.concatenate([endpoints_idx, prominent_idx, coverage_idx])
+    )
     optional = bisection_pool[~np.isin(bisection_pool, mandatory)]
 
     steps = []
