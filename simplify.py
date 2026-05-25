@@ -1506,9 +1506,10 @@ def simplify_animate(
 
     - **Top panel**: the underlying curve as a thin grey line, with the
       current simplified points overlaid as red dots + line.
-    - **Middle panel**: signed residual ``y - y_interp`` vs x, showing
-      *where* and in which direction the approximation deviates.  When
-      ``max_err`` is set, horizontal dashed lines mark the ± threshold.
+    - **Middle panel**: absolute residual ``|y - y_interp|`` vs x on a
+      log y-axis, so errors spanning several decades stay legible even
+      when the curve is well approximated.  When ``max_err`` is set, a
+      horizontal dashed line marks the threshold.
     - **Bottom panel**: log-log RMSE vs. number of retained points,
       with dashed reference hlines at the RMSE corresponding to
       R² = 0.9, 0.99, 0.999, and a persistent vertical line at the
@@ -1537,11 +1538,11 @@ def simplify_animate(
         rendered or how ``simplify`` selects points).  Default: 0.9.
     max_err : float or None, optional
         Forwarded to :func:`simplify` so the full (final-frame) point
-        set is the worst-error-bounded one, and drawn as ``±max_err``
-        horizontal dashed lines on the residual (middle) panel.  The
+        set is the worst-error-bounded one, and drawn as a ``max_err``
+        horizontal dashed line on the residual (middle) panel.  The
         greedy insertions enter the frame sweep in bisection order like
-        any other feature point, so the residual visibly converges into
-        the band as the animation progresses.  Default: ``None``.
+        any other feature point, so the residual visibly drops below
+        the threshold as the animation progresses.  Default: ``None``.
     log_y : bool or "auto", optional
         Forwarded to :func:`simplify`.  Must be ``True``/``False`` (not
         ``"auto"``) when ``max_err`` is set, since ``max_err``'s units
@@ -1713,21 +1714,33 @@ def simplify_animate(
         bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="0.7", alpha=0.9),
     )
 
-    # --- Residual subplot: (y - y_interp) vs x ---
+    # --- Residual subplot: |y - y_interp| vs x on a log y-axis ---
+    # A log scale keeps small late-frame residuals legible (otherwise a
+    # huge first-frame error would collapse the rest of the animation
+    # to a flat line).  The floor is set from the smallest positive
+    # residual across all steps, with sensible fallbacks.
     all_max_errs = np.array([s["max_err"] for s in steps])
     res_ceil = float(np.max(all_max_errs)) * 1.2
+    positive_res = np.concatenate([
+        np.abs(s["residual"])[np.abs(s["residual"]) > 0] for s in steps
+    ])
+    if positive_res.size > 0:
+        res_floor = float(positive_res.min()) * 0.5
+    else:
+        res_floor = res_ceil * 1e-6
+    if max_err is not None:
+        res_floor = min(res_floor, max_err * 0.05)
+        res_ceil = max(res_ceil, max_err * 5.0)
     ax_res.set_xlim(x_lo, x_hi)
-    ax_res.set_ylim(-res_ceil, res_ceil)
+    ax_res.set_ylim(res_floor, res_ceil)
+    ax_res.set_yscale("log")
     ax_res.set_xlabel(xlabel)
-    ax_res.set_ylabel(r"$y - y_{\mathrm{interp}}$")
-    ax_res.axhline(0, color="0.5", ls="-", lw=0.4)
+    ax_res.set_ylabel(r"$|y - y_{\mathrm{interp}}|$")
     if max_err is not None:
         ax_res.axhline(max_err, color="tab:green", ls="--", lw=1.0,
-                       alpha=0.8, label=rf"$\pm\,${max_err:g}")
-        ax_res.axhline(-max_err, color="tab:green", ls="--", lw=1.0,
-                       alpha=0.8)
+                       alpha=0.8, label=rf"max_err $={max_err:g}$")
         ax_res.legend(loc="upper right", fontsize=8)
-    res_fill = ax_res.fill_between(x_o, 0, np.zeros_like(x_o),
+    res_fill = ax_res.fill_between(x_o, res_floor, np.full_like(x_o, res_floor),
                                    color="tab:orange", alpha=0.4)
     res_line, = ax_res.plot([], [], "-", color="tab:orange", lw=0.6)
 
@@ -1806,11 +1819,14 @@ def simplify_animate(
             f"max $|\\Delta y| = {s['max_err']:.4f}$"
         )
 
-        # --- Middle panel: update residual ---
+        # --- Middle panel: update residual (|y - y_interp|, log y-axis) ---
+        abs_res = np.abs(s["residual"])
+        # Clip to the floor so the fill stays on-axis on a log scale.
+        abs_res_plot = np.maximum(abs_res, res_floor)
         res_fill.remove()
-        res_fill = ax_res.fill_between(x_o, 0, s["residual"],
+        res_fill = ax_res.fill_between(x_o, res_floor, abs_res_plot,
                                        color="tab:orange", alpha=0.4)
-        res_line.set_data(x_o, s["residual"])
+        res_line.set_data(x_o, abs_res_plot)
 
         # --- Bottom panel: build up error curve ---
         # Show all steps up to current.
