@@ -1,14 +1,17 @@
-# simplify
+# astrosimplify
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/astrosimplify.svg)](https://pypi.org/project/astrosimplify/)
 [![Release](https://img.shields.io/github/v/release/JiaWeiTeh/simplify)](https://github.com/JiaWeiTeh/simplify/releases)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20332764.svg)](https://doi.org/10.5281/zenodo.20332764)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![Dependencies](https://img.shields.io/badge/requires-numpy-blue.svg)
 
-Heuristic downsampling of 1-D curves while preserving sharp bends, local
-extrema, and overall shape. Single file, requires only NumPy — matplotlib is
-an optional dependency, needed only for the plotting and animation features.
+Heuristic downsampling of 1-D astrophysical profiles — radial
+density/temperature, stellar evolution tracks, spectral energy
+distributions, and any 1-D scalar curve — while preserving sharp
+transitions, local extrema, and overall shape.  Requires only NumPy;
+matplotlib is optional, for the plotting and animation helpers.
 
 <img src="media/demo_nonoise.gif" alt="Simplification demo" width="560">
 
@@ -20,7 +23,7 @@ RMSE vs point count on a log-log scale (bottom).  R² ≥ 0.9 is first
 reached at **n = 34** (green dashed line).  Generated with:
 
 ```bash
-python simplify.py --random --seed 42 --no-noise --animate media/demo_nonoise.gif --animate-duration 5
+astrosimplify --random --seed 42 --no-noise --animate media/demo_nonoise.gif --animate-duration 5
 ```
 
 ### Real data — Starburst99 5 Myr SED
@@ -37,7 +40,7 @@ by more than 0.05 dex (≈ 12 %) — the green dashed line in the
 log-residual panel.  Generated with:
 
 ```bash
-python simplify.py --randomSB99 --animate media/demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05 --log-y off
+astrosimplify --randomSB99 --animate media/demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05 --log-y off
 ```
 
 (The SB99 `y` is already `log₁₀ L`, so `--log-y off` treats it linearly
@@ -95,49 +98,60 @@ above describes the original radial grid the data was drawn from.)
 
 ## Installation
 
-`simplify` is a single file with no packaging — just clone the repo and
-run it in place:
+From PyPI (the recommended path):
+
+```bash
+pip install astrosimplify              # core (NumPy only)
+pip install "astrosimplify[plot]"      # also pulls matplotlib for --plot / --animate
+astrosimplify --help
+```
+
+Or from a checkout, if you want to hack on the source or rerun the
+demo scripts in `media/`:
 
 ```bash
 git clone https://github.com/JiaWeiTeh/simplify.git
 cd simplify
-pip install numpy            # matplotlib too, for --plot / --animate
-python simplify.py --help
+pip install -e ".[plot]"
 ```
 
-To use it from your own project, copy `simplify.py` next to your code (or
-add this directory to your `PYTHONPATH`) and `import simplify`.
+In either case, use it from Python as:
+
+```python
+import astrosimplify as asimp
+x_s, y_s = asimp.simplify(x, y)
+```
 
 ## Quick start
 
 ```bash
-python simplify.py --random --no-noise --animate simplify.gif
+astrosimplify --random --no-noise --animate simplify.gif
 ```
 
 Generates a synthetic test curve and an animated GIF of the
 simplification process. Other quick demos:
 
 ```bash
-python simplify.py --random --metrics                          # error table
-python simplify.py --random --diagnostic                       # size/error sweep
-python simplify.py --random --plot                             # comparison plot
-python simplify.py --random --animate demo.gif                 # animated GIF
-python simplify.py --randomSB99 --animate sb99.gif             # real SED data
-python simplify.py --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  # bounded error (--max-err needs explicit --log-y)
+astrosimplify --random --metrics                          # error table
+astrosimplify --random --diagnostic                       # size/error sweep
+astrosimplify --random --plot                             # comparison plot
+astrosimplify --random --animate demo.gif                 # animated GIF
+astrosimplify --randomSB99 --animate sb99.gif             # real SED data
+astrosimplify --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  # bounded error (--max-err needs explicit --log-y)
 ```
 
 ## Command line
 
 ```bash
-python simplify.py data.csv -o reduced.csv                    # basic
-python simplify.py data.csv --metrics --plot                   # inspect quality
-python simplify.py data.csv --nmin 200                         # denser output
-python simplify.py data.csv --max-err 0.1 --log-y off          # bound worst-case error (--max-err needs explicit --log-y)
-python simplify.py data.csv --animate output.gif               # animation
-python simplify.py data.csv --grad-inc 0.5                     # lower curvature threshold
+astrosimplify data.csv -o reduced.csv                    # basic
+astrosimplify data.csv --metrics --plot                   # inspect quality
+astrosimplify data.csv --nmin 200                         # denser output
+astrosimplify data.csv --max-err 0.1 --log-y off          # bound worst-case error (--max-err needs explicit --log-y)
+astrosimplify data.csv --animate output.gif               # animation
+astrosimplify data.csv --grad-inc 0.5                     # lower curvature threshold
 ```
 
-Run `python simplify.py --help` for all options.
+Run `astrosimplify --help` for all options.
 
 ## Choosing `nmin` and `max_err` (diagnostic mode)
 
@@ -152,7 +166,7 @@ points while a smaller one keeps only the sharpest features. It runs
 instead of the normal conversion, so no output file is written.
 
 ```bash
-python simplify.py --random --seed 67 --diagnostic
+astrosimplify --random --seed 67 --diagnostic
 ```
 
 ```text
@@ -184,7 +198,7 @@ optimised — **dex when `log_y` is active**, linear otherwise — so the
 grid of before/after panels (4 → 2×2, 5–6 → 2×3, 7–9 → 3×3, …):
 
 ```bash
-python simplify.py --random --seed 67 --diagnostic --nrels 0.9,0.5,0.25 --plot
+astrosimplify --random --seed 67 --diagnostic --nrels 0.9,0.5,0.25 --plot
 ```
 
 ![Diagnostic grid for the random seed-67 curve](media/demo_random_diagnostic.png)
@@ -194,7 +208,7 @@ metrics and the simplified arrays) so you can drive parameter selection
 programmatically:
 
 ```python
-from simplify import random_test_curve, simplify_diagnostic
+from astrosimplify import random_test_curve, simplify_diagnostic
 
 x, y = random_test_curve(seed=67)
 rows = simplify_diagnostic(x, y, nrels=[0.6, 0.3], plot=False)
@@ -205,7 +219,7 @@ print(rows[0]["n_out"], rows[0]["max_err"], rows[0]["r_squared"])
 
 ```python
 import numpy as np
-from simplify import simplify, simplify_error, simplify_plot
+from astrosimplify import astrosimplify, simplify_error, simplify_plot
 
 x = np.linspace(0, 10, 10000)
 y = np.sin(x) + 0.5 * np.sin(5 * x)

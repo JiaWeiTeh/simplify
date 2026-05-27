@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
-title: "simplify: heuristic downsampling of one-dimensional curves"
-abstract: "Heuristic downsampling of 1-D curves while preserving sharp bends, local extrema, and overall shape. Single file, requires only NumPy; matplotlib is optional, for plotting and animation."
+title: "astrosimplify: heuristic downsampling of one-dimensional astrophysical profiles"
+abstract: "Heuristic downsampling of 1-D astrophysical profiles (radial density/temperature, stellar evolution tracks, spectral energy distributions) while preserving sharp transitions, local extrema, and overall shape. Requires only NumPy; matplotlib is optional, for plotting and animation."
 type: software
 authors:
   - family-names: Teh
@@ -15,9 +15,13 @@ url: "https://github.com/JiaWeiTeh/simplify"
 repository-code: "https://github.com/JiaWeiTeh/simplify"
 license: MIT
 keywords:
+  - astronomy
+  - astrophysics
   - curve simplification
   - downsampling
   - data compression
-  - Python
-  - astronomy
+  - radial profiles
   - spectral energy distribution
+  - stellar evolution tracks
+  - numerical methods
+  - Python

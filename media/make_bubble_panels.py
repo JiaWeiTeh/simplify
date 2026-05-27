@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from simplify import (  # noqa: E402
+from astrosimplify import (  # noqa: E402
     _auto_log_y, _importance_order, _log_ylim_from_positive, simplify_error,
 )
 
