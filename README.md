@@ -77,9 +77,59 @@ a 100-point pre-simplification of the full 10 000-point profiles, kept
 small so the demo regenerates quickly in-repo; the compression figure
 above describes the original radial grid the data was drawn from.)
 
+## Where this helps
+
+The pattern recurs across astrophysical pipelines: a solver hands you
+10⁴–10⁶ points because the *integrator* needs that density to stay
+stable or to resolve a shock, but the *output* — the curve you save to
+disk, plot, interpolate against, or hand to the next code — only needs
+a small fraction of them. The dense grid then follows you around,
+bloating snapshot files and slowing every downstream operation that
+scales with N (interpolation, FFT, χ² fits, file I/O).
+`astrosimplify` cuts N on *shape* rather than on stride: sharp
+transitions and extrema survive, smooth stretches get thinned, and
+`--max-err` / `--diagnostic` let you fix the accuracy-vs-size trade
+explicitly instead of guessing.
+
+Concrete places this pays off:
+
+- **1-D hydrodynamic snapshots.** Radial `ρ(r)`, `T(r)`, `v(r)`,
+  `M(r)` from spherically-symmetric solvers — stellar-wind bubbles,
+  supernova remnants, accretion shells. Shocks and contact
+  discontinuities have to survive; the smooth interior does not need
+  10 000 samples. The `bubble_T.dat` / `bubble_n.dat` demo above is
+  exactly this case: 10 000 → ≲ 60 points at R² ≥ 0.999.
+- **Stellar evolution tracks.** Codes that emit 10⁴–10⁵ timesteps for
+  numerical stability, but where an HR-diagram track, a grid handed
+  to a population-synthesis code, or a publication figure rarely
+  needs more than a few hundred. The morphology fits the algorithm
+  well: long quiescent stretches interrupted by short, sharp episodes
+  (flashes, blue loops, post-AGB turns).
+- **Spectra, SEDs, and template libraries.** The Starburst99 demo
+  above (1221 → 360 pts at ≤ 0.05 dex) generalises to any model
+  atmosphere, binary/single-star SED, or template that gets convolved
+  against a filter set or fed to a stellar-population-synthesis code.
+  `load_sb99_5myr()` ships with the package, so the run reproduces
+  with no extra downloads.
+- **Cooling functions, opacities, reaction rates.** Tabulated `Λ(T)`,
+  Rosseland opacities, nuclear rates: dense in the supplied table but
+  every solver call only needs an interpolator that hits the
+  breakpoints accurately. Multi-decade `y` is the default regime
+  here, and `log_y="auto"` handles it without ceremony.
+- **Dense outputs from adaptive integrators.** `solve_ivp(...,
+  dense_output=True)`, symplectic schemes, or any integrator whose
+  exported sample grid is much finer than its actual step count —
+  trim the grid down to what downstream tools (plots, fits, handoff
+  to a longer-timescale integrator) actually consume.
+
+The win in each case is the same: smaller files on disk, and
+proportionally cheaper downstream computation, with a worst-case error
+you set explicitly rather than discover after the fact.
+
 ## Contents
 
 - [In reality, curves are much simpler](#in-reality-curves-are-much-simpler)
+- [Where this helps](#where-this-helps)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Command line](#command-line)
