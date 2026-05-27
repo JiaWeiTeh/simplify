@@ -415,6 +415,29 @@ def _auto_log_y(y: np.ndarray, log_y) -> bool:
     return float(finite.max()) / y_min > 100.0
 
 
+def _log_ylim_from_positive(
+    values, floor_mult: float = 0.5, ceil_mult: float = 2.0,
+) -> Union[Tuple[float, float], None]:
+    """
+    Compute ``(floor, ceil)`` for a log y-axis from sample magnitudes.
+
+    The floor is ``floor_mult × min |v|>0`` (defaulting to a half-decade
+    below the smallest positive sample); the ceiling is
+    ``ceil_mult × max |v|`` (a factor above the largest).  Returns
+    ``None`` when no positive sample is present, leaving the caller to
+    pick a fallback.
+
+    Used by the residual panels in :func:`simplify_animate` and the
+    paper-figure script ``media/make_bubble_panels.py`` so the
+    floor/ceiling rule stays in one place.
+    """
+    arr = np.abs(np.asarray(values).ravel())
+    positive = arr[arr > 0]
+    if positive.size == 0:
+        return None
+    return float(positive.min()) * floor_mult, float(arr.max()) * ceil_mult
+
+
 def _x_uniform_coverage_idx(
     x: np.ndarray,
     pool_idx: np.ndarray,
@@ -1717,22 +1740,17 @@ def simplify_animate(
     # --- Residual subplot: |y - y_interp| vs x on a log y-axis ---
     # A log scale keeps small late-frame residuals legible (otherwise a
     # huge first-frame error would collapse the rest of the animation
-    # to a flat line).  Floor is set from the smallest positive residual
-    # across all steps; degenerate all-zero-residual inputs (e.g. a
+    # to a flat line).  Degenerate all-zero-residual inputs (e.g. a
     # perfectly piecewise-linear curve) get a small positive sentinel
     # range so the log axis still has valid limits.
     abs_residuals = [np.abs(s["residual"]) for s in steps]
-    all_max_errs = np.array([a.max() if a.size else 0.0 for a in abs_residuals])
-    res_ceil = float(all_max_errs.max()) * 1.2
-    positive_res = np.concatenate([a[a > 0] for a in abs_residuals])
-    if positive_res.size > 0:
-        res_floor = float(positive_res.min()) * 0.5
-    else:
-        res_floor = res_ceil * 1e-6
-    if res_ceil <= 0.0:
-        # No residual signal at all; pick an innocuous decade so log
-        # axis limits stay valid and the empty panel renders.
+    flat_abs = (np.concatenate(abs_residuals) if abs_residuals
+                else np.empty(0))
+    ylim = _log_ylim_from_positive(flat_abs, floor_mult=0.5, ceil_mult=1.2)
+    if ylim is None:
         res_floor, res_ceil = 1e-6, 1.0
+    else:
+        res_floor, res_ceil = ylim
     if max_err is not None:
         res_floor = min(res_floor, max_err * 0.05)
         res_ceil = max(res_ceil, max_err * 5.0)
