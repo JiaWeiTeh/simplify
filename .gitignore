@@ -1,2 +1,8 @@
 __pycache__/
 simplified_output.csv
+
+# Packaging build artefacts
+*.egg-info/
+build/
+dist/
+*.egg

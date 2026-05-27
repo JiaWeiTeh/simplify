@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Standalone curve-simplification module.
+astrosimplify: heuristic downsampling of 1-D astrophysical profiles.
 
-Heuristic downsampling of 1-D curves while preserving physically and
-visually important features (sharp bends, local extrema, arc-length
-uniformity).  No dependencies beyond numpy / matplotlib / stdlib.
+Designed for radial density/temperature profiles, stellar evolution
+tracks, spectral energy distributions, and any 1-D scalar curve where
+sharp transitions and local extrema must survive aggressive
+downsampling.  Requires only NumPy; matplotlib is optional, for the
+plotting and animation helpers.
 
 Functions
 ---------
@@ -25,6 +27,8 @@ from typing import Tuple, Union, Sequence
 
 import numpy as np
 
+__version__ = "1.0.0"
+
 __all__ = [
     "simplify",
     "simplify_error",
@@ -33,10 +37,11 @@ __all__ = [
     "simplify_animate",
     "random_test_curve",
     "load_sb99_5myr",
+    "__version__",
 ]
 
 # Path to the bundled matplotlib style file.
-_STYLE_FILE = Path(__file__).parent / "simplify.mplstyle"
+_STYLE_FILE = Path(__file__).parent / "astrosimplify.mplstyle"
 
 # Bundled Starburst99 SED (instantaneous burst, 5 Myr slice).
 _SB99_5MYR_FILE = Path(__file__).parent / "data" / "sb99_5myr.dat"
@@ -727,10 +732,10 @@ def simplify(
 
     .. code-block:: bash
 
-        python simplify.py profile.csv -o reduced.csv --nmin 200
-        python simplify.py profile.csv --metrics          # print error table
-        python simplify.py profile.csv --plot             # interactive plot
-        python simplify.py profile.csv --animate out.gif  # animated GIF
+        astrosimplify profile.csv -o reduced.csv --nmin 200
+        astrosimplify profile.csv --metrics          # print error table
+        astrosimplify profile.csv --plot             # interactive plot
+        astrosimplify profile.csv --animate out.gif  # animated GIF
     """
     import warnings
 
@@ -2057,10 +2062,10 @@ def main():
 
     Usage
     -----
-    python simplify.py input.csv -o output.csv --nmin 150 --grad-inc 0.5
-    python simplify.py input.csv --metrics --plot
-    python simplify.py input.csv --diagnostic --plot
-    python simplify.py input.csv --animate simplify.gif --animate-duration 5
+    astrosimplify input.csv -o output.csv --nmin 150 --grad-inc 0.5
+    astrosimplify input.csv --metrics --plot
+    astrosimplify input.csv --diagnostic --plot
+    astrosimplify input.csv --animate simplify.gif --animate-duration 5
 
     Positional arguments
     --------------------
@@ -2137,14 +2142,14 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        prog="simplify",
+        prog="astrosimplify",
         description=(
             "Downsample a two-column (x, y) data file while preserving "
             "sharp features, local extrema, and overall curve shape."
         ),
         epilog=(
             "Example:\n"
-            "  python simplify.py data.csv -o reduced.csv --nmin 200\n\n"
+            "  astrosimplify data.csv -o reduced.csv --nmin 200\n\n"
             "The algorithm combines six stages:\n"
             "  1.  Scale-invariant bend detection (Menger curvature\n"
             "      in normalised coords, gated by --grad-inc)\n"
@@ -2528,10 +2533,10 @@ if __name__ == "__main__":
         print()
         print("  Or from the command line:")
         print()
-        print("    python simplify.py data.csv -o out.csv --metrics")
-        print("    python simplify.py data.csv --diagnostic")
-        print("    python simplify.py data.csv --plot")
-        print("    python simplify.py data.csv --animate simplify.gif")
+        print("    astrosimplify data.csv -o out.csv --metrics")
+        print("    astrosimplify data.csv --diagnostic")
+        print("    astrosimplify data.csv --plot")
+        print("    astrosimplify data.csv --animate simplify.gif")
         print()
         print("  Run with --help for all options.")
         print("=" * 60)
