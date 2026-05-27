@@ -69,6 +69,11 @@ detector spends its budget on the sharp edge and barely touches the
 smooth interior, which is exactly the behaviour you want for
 astrophysical density/temperature/flux profiles.
 
+(The two bundled files `data/bubble_T.dat` and `data/bubble_n.dat` are
+a 100-point pre-simplification of the full 10 000-point profiles, kept
+small so the demo regenerates quickly in-repo; the compression figure
+above describes the original radial grid the data was drawn from.)
+
 ## Contents
 
 - [In reality, curves are much simpler](#in-reality-curves-are-much-simpler)
