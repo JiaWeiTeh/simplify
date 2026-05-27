@@ -74,9 +74,9 @@ astrophysical density/temperature/flux profiles.
 - [In reality, curves are much simpler](#in-reality-curves-are-much-simpler)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Python API](#python-api)
 - [Command line](#command-line)
 - [Choosing `nmin` and `max_err` (diagnostic mode)](#choosing-nmin-and-max_err-diagnostic-mode)
-- [Python API](#python-api)
 - [Input and output format](#input-and-output-format)
 - [How it works (the short version)](#how-it-works-the-short-version)
 - [Algorithm](#algorithm)
@@ -105,23 +105,57 @@ add this directory to your `PYTHONPATH`) and `import simplify`.
 
 ## Quick start
 
-```bash
-python simplify.py --random --no-noise --animate simplify.gif
+```python
+import numpy as np
+from simplify import simplify, simplify_error
+
+x = np.linspace(0, 10, 10000)
+y = np.sin(x) + 0.5 * np.sin(5 * x)
+
+x_s, y_s = simplify(x, y)                       # 10000 → ~100 points
+metrics = simplify_error(x, y, x_s, y_s)
+print(f"R² = {metrics['r_squared']:.4f}, "
+      f"compression = {metrics['compression']:.1f}x")
 ```
 
-Generates a synthetic test curve and an animated GIF of the
-simplification process. Other quick demos:
+`simplify` is a single file with NumPy as its only hard dependency, so it
+drops straight into a script or Jupyter notebook.  See
+[Python API](#python-api) for the full set of options, or
+[Command line](#command-line) for one-off downsampling of data files
+without writing Python.
 
-```bash
-python simplify.py --random --metrics                          # error table
-python simplify.py --random --diagnostic                       # size/error sweep
-python simplify.py --random --plot                             # comparison plot
-python simplify.py --random --animate demo.gif                 # animated GIF
-python simplify.py --randomSB99 --animate sb99.gif             # real SED data
-python simplify.py --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  # bounded error (--max-err needs explicit --log-y)
+## Python API
+
+```python
+import numpy as np
+from simplify import simplify, simplify_error, simplify_plot
+
+x = np.linspace(0, 10, 10000)
+y = np.sin(x) + 0.5 * np.sin(5 * x)
+
+# Simplify (default warn_below_r2 = 0.9)
+x_s, y_s = simplify(x, y)
+
+# Higher nmin for denser output
+x_s, y_s = simplify(x, y, nmin=200)
+
+# Bound the worst-case vertical error.  max_err's units depend on the
+# y-space, so log_y must be explicit: 0.1 in y-units (log_y=False) or
+# 0.1 dex (log_y=True).
+x_s, y_s = simplify(x, y, max_err=0.1, log_y=False)
+
+# Error metrics
+metrics = simplify_error(x, y, x_s, y_s)
+print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:.1f}x")
+
+# Plot
+simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 ```
 
 ## Command line
+
+For one-off downsampling of two-column data files without writing
+Python:
 
 ```bash
 python simplify.py data.csv -o reduced.csv                    # basic
@@ -130,6 +164,17 @@ python simplify.py data.csv --nmin 200                         # denser output
 python simplify.py data.csv --max-err 0.1 --log-y off          # bound worst-case error (--max-err needs explicit --log-y)
 python simplify.py data.csv --animate output.gif               # animation
 python simplify.py data.csv --grad-inc 0.5                     # lower curvature threshold
+```
+
+Built-in demo curves (no input file required):
+
+```bash
+python simplify.py --random --no-noise --animate simplify.gif  # synthetic curve + GIF
+python simplify.py --random --metrics                          # error table
+python simplify.py --random --diagnostic                       # size/error sweep
+python simplify.py --random --plot                             # comparison plot
+python simplify.py --randomSB99 --animate sb99.gif             # real SED data
+python simplify.py --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  # bounded error (--max-err needs explicit --log-y)
 ```
 
 Run `python simplify.py --help` for all options.
@@ -194,34 +239,6 @@ from simplify import random_test_curve, simplify_diagnostic
 x, y = random_test_curve(seed=67)
 rows = simplify_diagnostic(x, y, nrels=[0.6, 0.3], plot=False)
 print(rows[0]["n_out"], rows[0]["max_err"], rows[0]["r_squared"])
-```
-
-## Python API
-
-```python
-import numpy as np
-from simplify import simplify, simplify_error, simplify_plot
-
-x = np.linspace(0, 10, 10000)
-y = np.sin(x) + 0.5 * np.sin(5 * x)
-
-# Simplify (default warn_below_r2 = 0.9)
-x_s, y_s = simplify(x, y)
-
-# Higher nmin for denser output
-x_s, y_s = simplify(x, y, nmin=200)
-
-# Bound the worst-case vertical error.  max_err's units depend on the
-# y-space, so log_y must be explicit: 0.1 in y-units (log_y=False) or
-# 0.1 dex (log_y=True).
-x_s, y_s = simplify(x, y, max_err=0.1, log_y=False)
-
-# Error metrics
-metrics = simplify_error(x, y, x_s, y_s)
-print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:.1f}x")
-
-# Plot
-simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 ```
 
 ## Input and output format
