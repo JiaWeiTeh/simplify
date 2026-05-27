@@ -25,7 +25,7 @@ python simplify.py --random --seed 42 --no-noise --animate media/demo_nonoise.gi
 
 ### Real data — Starburst99 5 Myr SED
 
-![Starburst99 + max_err](media/demo_sb99_tight.gif)
+<img src="media/demo_sb99_tight.gif" alt="Starburst99 + max_err" width="560">
 
 1221 pts → **360** pts (3.4× compression).  The curve is the
 Starburst99 `LOG (TOTAL)` SED column at 5 Myr (instantaneous burst,
