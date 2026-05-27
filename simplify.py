@@ -1519,12 +1519,14 @@ def simplify_animate(
     """
     Create an animated GIF showing progressive curve simplification.
 
-    The animation builds the simplified curve up from 5 points to the
-    full feature-detected set.  The mandatory set (the two curve endpoints,
+    The animation builds the simplified curve up to the full
+    feature-detected set.  The mandatory set (the two curve endpoints,
     prominent extrema, and the x-uniform coverage skeleton) follows the
-    same rule as :func:`simplify` and is present from the first frame;
-    the remaining feature points are added in hierarchical-bisection
-    order so that frames are strictly nested (each frame is a superset
+    same rule as :func:`simplify` and is present from the first frame —
+    so the smallest frame contains the mandatory set (typically ~20
+    points for the bundled demos, never fewer than 5), and the remaining
+    feature points are added in hierarchical-bisection order so that
+    frames are strictly nested (each frame is a superset
     of the previous one).  Three panels are shown:
 
     - **Top panel**: the underlying curve as a thin grey line, with the
@@ -1592,10 +1594,13 @@ def simplify_animate(
     n_orig = x_o.size
 
     # --- Precompute simplification at increasing point counts ---
-    # Start from 5 points and build up to the full feature-detected set.
-    # ``max_err`` is forwarded so the final frame is the same worst-error-
-    # bounded set the caller gets from simplify; the greedy insertions
-    # then enter the frame sweep in bisection order with every other point.
+    # Sweep from a 5-point floor up to the full feature-detected set;
+    # the smallest realised frame ends up at max(5, mandatory.size)
+    # because the mandatory set (endpoints + extrema + coverage skeleton)
+    # is always rendered.  ``max_err`` is forwarded so the final frame
+    # is the same worst-error-bounded set the caller gets from simplify;
+    # the greedy insertions then enter the frame sweep in bisection
+    # order with every other point.
     x_full, y_full = simplify(
         x_o, y_o, warn_below_r2=None, max_err=max_err, log_y=log_y,
     )
