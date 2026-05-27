@@ -15,9 +15,9 @@ an optional dependency, needed only for the plotting and animation features.
 
 The animation progressively adds points to a 10 000-point random test
 curve (seed 42, no noise).  Three panels: the simplified overlay (top),
-the signed residual showing where the approximation over-/undershoots
-(middle), and RMSE vs point count on a log-log scale (bottom).  R² ≥ 0.9
-is first reached at **n = 34** (green dashed line).  Generated with:
+the absolute residual `|y − y_interp|` on a log y-axis (middle), and
+RMSE vs point count on a log-log scale (bottom).  R² ≥ 0.9 is first
+reached at **n = 34** (green dashed line).  Generated with:
 
 ```bash
 python simplify.py --random --seed 42 --no-noise --animate media/demo_nonoise.gif --animate-duration 5

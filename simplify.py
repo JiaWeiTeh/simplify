@@ -1497,12 +1497,12 @@ def simplify_animate(
     Create an animated GIF showing progressive curve simplification.
 
     The animation builds the simplified curve up from 5 points to the
-    full feature-detected set.  The mandatory set (prominent extrema plus
-    the x-uniform coverage skeleton) follows the same rule as
-    :func:`simplify` and is present from the first frame; the remaining
-    feature points are added in hierarchical-bisection order so that
-    frames are strictly nested (each frame is a superset of the previous
-    one).  Three panels are shown:
+    full feature-detected set.  The mandatory set (the two curve endpoints,
+    prominent extrema, and the x-uniform coverage skeleton) follows the
+    same rule as :func:`simplify` and is present from the first frame;
+    the remaining feature points are added in hierarchical-bisection
+    order so that frames are strictly nested (each frame is a superset
+    of the previous one).  Three panels are shown:
 
     - **Top panel**: the underlying curve as a thin grey line, with the
       current simplified points overlaid as red dots + line.
@@ -1717,17 +1717,22 @@ def simplify_animate(
     # --- Residual subplot: |y - y_interp| vs x on a log y-axis ---
     # A log scale keeps small late-frame residuals legible (otherwise a
     # huge first-frame error would collapse the rest of the animation
-    # to a flat line).  The floor is set from the smallest positive
-    # residual across all steps, with sensible fallbacks.
-    all_max_errs = np.array([s["max_err"] for s in steps])
-    res_ceil = float(np.max(all_max_errs)) * 1.2
-    positive_res = np.concatenate([
-        np.abs(s["residual"])[np.abs(s["residual"]) > 0] for s in steps
-    ])
+    # to a flat line).  Floor is set from the smallest positive residual
+    # across all steps; degenerate all-zero-residual inputs (e.g. a
+    # perfectly piecewise-linear curve) get a small positive sentinel
+    # range so the log axis still has valid limits.
+    abs_residuals = [np.abs(s["residual"]) for s in steps]
+    all_max_errs = np.array([a.max() if a.size else 0.0 for a in abs_residuals])
+    res_ceil = float(all_max_errs.max()) * 1.2
+    positive_res = np.concatenate([a[a > 0] for a in abs_residuals])
     if positive_res.size > 0:
         res_floor = float(positive_res.min()) * 0.5
     else:
         res_floor = res_ceil * 1e-6
+    if res_ceil <= 0.0:
+        # No residual signal at all; pick an innocuous decade so log
+        # axis limits stay valid and the empty panel renders.
+        res_floor, res_ceil = 1e-6, 1.0
     if max_err is not None:
         res_floor = min(res_floor, max_err * 0.05)
         res_ceil = max(res_ceil, max_err * 5.0)
@@ -1740,7 +1745,10 @@ def simplify_animate(
         ax_res.axhline(max_err, color="tab:green", ls="--", lw=1.0,
                        alpha=0.8, label=rf"max_err $={max_err:g}$")
         ax_res.legend(loc="upper right", fontsize=8)
-    res_fill = ax_res.fill_between(x_o, res_floor, np.full_like(x_o, res_floor),
+    # Each step's |residual|, pre-clipped to the log floor once so the
+    # per-frame _update doesn't redo it for repeated frames.
+    abs_res_plots = [np.maximum(a, res_floor) for a in abs_residuals]
+    res_fill = ax_res.fill_between(x_o, res_floor, res_floor,
                                    color="tab:orange", alpha=0.4)
     res_line, = ax_res.plot([], [], "-", color="tab:orange", lw=0.6)
 
@@ -1820,9 +1828,7 @@ def simplify_animate(
         )
 
         # --- Middle panel: update residual (|y - y_interp|, log y-axis) ---
-        abs_res = np.abs(s["residual"])
-        # Clip to the floor so the fill stays on-axis on a log scale.
-        abs_res_plot = np.maximum(abs_res, res_floor)
+        abs_res_plot = abs_res_plots[step_idx]
         res_fill.remove()
         res_fill = ax_res.fill_between(x_o, res_floor, abs_res_plot,
                                        color="tab:orange", alpha=0.4)
