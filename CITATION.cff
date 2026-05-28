@@ -8,8 +8,8 @@ authors:
     given-names: Jia Wei
     orcid: "https://orcid.org/0000-0001-7863-5047"
     affiliation: "Institut für Theoretische Astrophysik, Universität Heidelberg"
-version: "1.0.0"
-date-released: 2026-05-21
+version: "2.0.0"
+date-released: 2026-05-28
 doi: "10.5281/zenodo.20332764"
 url: "https://github.com/JiaWeiTeh/simplify"
 repository-code: "https://github.com/JiaWeiTeh/simplify"
