@@ -174,23 +174,51 @@ x_s, y_s = asimp.simplify(x, y)
 
 ## Quick start
 
-```bash
-astrosimplify --random --no-noise --animate simplify.gif
+```python
+import numpy as np
+import astrosimplify as asimp
+
+x = np.linspace(0, 10, 10000)
+y = np.sin(x) + 0.5 * np.sin(5 * x)
+
+x_s, y_s = asimp.simplify(x, y)                       # 10000 → ~100 points
+metrics = asimp.simplify_error(x, y, x_s, y_s)
+print(f"R² = {metrics['r_squared']:.4f}, "
+      f"compression = {metrics['compression']:.1f}x")
 ```
 
-`simplify` is a single file with NumPy as its only hard dependency, so it
-drops straight into a script or Jupyter notebook.  See
+`astrosimplify` has NumPy as its only hard dependency, so it drops
+straight into a script or Jupyter notebook.  See
 [Python API](#python-api) for the full set of options, or
 [Command line](#command-line) for one-off downsampling of data files
 without writing Python.
 
-```bash
-astrosimplify --random --metrics                          # error table
-astrosimplify --random --diagnostic                       # size/error sweep
-astrosimplify --random --plot                             # comparison plot
-astrosimplify --random --animate demo.gif                 # animated GIF
-astrosimplify --randomSB99 --animate sb99.gif             # real SED data
-astrosimplify --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  # bounded error (--max-err needs explicit --log-y)
+## Python API
+
+```python
+import numpy as np
+from astrosimplify import simplify, simplify_error, simplify_plot
+
+x = np.linspace(0, 10, 10000)
+y = np.sin(x) + 0.5 * np.sin(5 * x)
+
+# Simplify (default warn_below_r2 = 0.9)
+x_s, y_s = simplify(x, y)
+
+# Higher nmin for denser output
+x_s, y_s = simplify(x, y, nmin=200)
+
+# Bound the worst-case vertical error.  max_err's units depend on the
+# y-space, so log_y must be explicit: 0.1 in y-units (log_y=False) or
+# 0.1 dex (log_y=True).
+x_s, y_s = simplify(x, y, max_err=0.1, log_y=False)
+
+# Error metrics
+metrics = simplify_error(x, y, x_s, y_s)
+print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:.1f}x")
+
+# Plot
+simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 ```
 
 ## Command line
@@ -205,6 +233,17 @@ astrosimplify data.csv --nmin 200                         # denser output
 astrosimplify data.csv --max-err 0.1 --log-y off          # bound worst-case error (--max-err needs explicit --log-y)
 astrosimplify data.csv --animate output.gif               # animation
 astrosimplify data.csv --grad-inc 0.5                     # lower curvature threshold
+```
+
+Built-in demo curves (no input file required):
+
+```bash
+astrosimplify --random --no-noise --animate simplify.gif  # synthetic curve + GIF
+astrosimplify --random --metrics                          # error table
+astrosimplify --random --diagnostic                       # size/error sweep
+astrosimplify --random --plot                             # comparison plot
+astrosimplify --randomSB99 --animate sb99.gif             # real SED data
+astrosimplify --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  # bounded error (--max-err needs explicit --log-y)
 ```
 
 Run `astrosimplify --help` for all options.
@@ -269,34 +308,6 @@ from astrosimplify import random_test_curve, simplify_diagnostic
 x, y = random_test_curve(seed=67)
 rows = simplify_diagnostic(x, y, nrels=[0.6, 0.3], plot=False)
 print(rows[0]["n_out"], rows[0]["max_err"], rows[0]["r_squared"])
-```
-
-## Python API
-
-```python
-import numpy as np
-from astrosimplify import astrosimplify, simplify_error, simplify_plot
-
-x = np.linspace(0, 10, 10000)
-y = np.sin(x) + 0.5 * np.sin(5 * x)
-
-# Simplify (default warn_below_r2 = 0.9)
-x_s, y_s = simplify(x, y)
-
-# Higher nmin for denser output
-x_s, y_s = simplify(x, y, nmin=200)
-
-# Bound the worst-case vertical error.  max_err's units depend on the
-# y-space, so log_y must be explicit: 0.1 in y-units (log_y=False) or
-# 0.1 dex (log_y=True).
-x_s, y_s = simplify(x, y, max_err=0.1, log_y=False)
-
-# Error metrics
-metrics = simplify_error(x, y, x_s, y_s)
-print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:.1f}x")
-
-# Plot
-simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 ```
 
 ## Input and output format

@@ -24,7 +24,7 @@ from matplotlib.animation import FuncAnimation
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from simplify import _auto_log_y, _importance_order, simplify_error  # noqa: E402
+from astrosimplify import _auto_log_y, _importance_order, simplify_error  # noqa: E402
 
 STYLE_FILE = ROOT / "media" / "trinity.mplstyle"
 
