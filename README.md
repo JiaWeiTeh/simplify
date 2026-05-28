@@ -28,7 +28,7 @@ astrosimplify --random --seed 42 --no-noise --animate media/demo_nonoise.gif --a
 
 ### Real data — Starburst99 5 Myr SED
 
-![Starburst99 + max_err](media/demo_sb99_tight.gif)
+<img src="media/demo_sb99_tight.gif" alt="Starburst99 + max_err" width="560">
 
 1221 pts → **360** pts (3.4× compression).  The curve is the
 Starburst99 `LOG (TOTAL)` SED column at 5 Myr (instantaneous burst,
@@ -132,9 +132,9 @@ you set explicitly rather than discover after the fact.
 - [Where this helps](#where-this-helps)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Python API](#python-api)
 - [Command line](#command-line)
 - [Choosing `nmin` and `max_err` (diagnostic mode)](#choosing-nmin-and-max_err-diagnostic-mode)
-- [Python API](#python-api)
 - [Input and output format](#input-and-output-format)
 - [How it works (the short version)](#how-it-works-the-short-version)
 - [Algorithm](#algorithm)
@@ -178,8 +178,11 @@ x_s, y_s = asimp.simplify(x, y)
 astrosimplify --random --no-noise --animate simplify.gif
 ```
 
-Generates a synthetic test curve and an animated GIF of the
-simplification process. Other quick demos:
+`simplify` is a single file with NumPy as its only hard dependency, so it
+drops straight into a script or Jupyter notebook.  See
+[Python API](#python-api) for the full set of options, or
+[Command line](#command-line) for one-off downsampling of data files
+without writing Python.
 
 ```bash
 astrosimplify --random --metrics                          # error table
@@ -191,6 +194,9 @@ astrosimplify --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  
 ```
 
 ## Command line
+
+For one-off downsampling of two-column data files without writing
+Python:
 
 ```bash
 astrosimplify data.csv -o reduced.csv                    # basic
