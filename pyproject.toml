@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astrosimplify"
+version = "2.0.0"
+description = "Heuristic downsampling of 1-D astrophysical profiles preserving sharp transitions, local extrema, and overall shape."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Jia Wei Teh" }]
+requires-python = ">=3.8"
+keywords = [
+    "astronomy",
+    "astrophysics",
+    "curve simplification",
+    "data compression",
+    "radial profiles",
+    "spectral energy distribution",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = ["numpy>=1.20"]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.5"]
+
+[project.scripts]
+astrosimplify = "astrosimplify:main"
+
+[project.urls]
+Homepage      = "https://github.com/JiaWeiTeh/simplify"
+Repository    = "https://github.com/JiaWeiTeh/simplify"
+Issues        = "https://github.com/JiaWeiTeh/simplify/issues"
+Documentation = "https://github.com/JiaWeiTeh/simplify#readme"
+
+[tool.setuptools]
+packages = ["astrosimplify"]
+
+[tool.setuptools.package-data]
+astrosimplify = ["*.mplstyle", "data/*.dat"]

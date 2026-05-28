@@ -27,7 +27,9 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from simplify import _auto_log_y, _importance_order, simplify_error  # noqa: E402
+from astrosimplify import (  # noqa: E402
+    _auto_log_y, _importance_order, _log_ylim_from_positive, simplify_error,
+)
 
 STYLE_FILE = ROOT / "media" / "trinity.mplstyle"
 
@@ -118,9 +120,9 @@ def main():
         ax_res.grid(False)
         ax_res.tick_params(which="both", labelbottom=False)
         ax_res.set_ylabel(panel["res_ylabel"])
-        positive = abs_res[abs_res > 0]
-        if positive.size:
-            ax_res.set_ylim(positive.min() * 0.5, abs_res.max() * 2.0)
+        ylim = _log_ylim_from_positive(abs_res, floor_mult=0.5, ceil_mult=2.0)
+        if ylim is not None:
+            ax_res.set_ylim(*ylim)
 
     # X-axis numbers only on the very bottom panel.
     ax_bottom = pairs[-1][1]
