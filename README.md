@@ -65,15 +65,15 @@ interior meets the cool swept-up shell.
 |:---:|:---:|
 | ![Bubble temperature profile](media/demo_bubble_T.gif) | ![Bubble density profile](media/demo_bubble_n.gif) |
 
-These profiles are sampled on a **10 000-point** radial grid. Fewer than
-**60 points reproduce either curve to R² ≥ 0.999** — a ~170× reduction —
+These profiles are sampled on a **30 000-point** radial grid. Fewer than
+**60 points reproduce either curve to R² ≥ 0.999** — a ~500× reduction —
 and the first ~30 already clear that bar (bottom panel). The bend
 detector spends its budget on the sharp edge and barely touches the
 smooth interior, which is exactly the behaviour you want for
 astrophysical density/temperature/flux profiles.
 
 (The two bundled files `data/bubble_T.dat` and `data/bubble_n.dat` are
-a 100-point pre-simplification of the full 10 000-point profiles, kept
+a 100-point pre-simplification of the full 30 000-point profiles, kept
 small so the demo regenerates quickly in-repo; the compression figure
 above describes the original radial grid the data was drawn from.)
 
@@ -97,8 +97,8 @@ Concrete places this pays off:
   `M(r)` from spherically-symmetric solvers — stellar-wind bubbles,
   supernova remnants, accretion shells. Shocks and contact
   discontinuities have to survive; the smooth interior does not need
-  10 000 samples. The `bubble_T.dat` / `bubble_n.dat` demo above is
-  exactly this case: 10 000 → ≲ 60 points at R² ≥ 0.999.
+  30 000 samples. The `bubble_T.dat` / `bubble_n.dat` demo above is
+  exactly this case: 30 000 → ≲ 60 points at R² ≥ 0.999.
 - **Stellar evolution tracks.** Codes that emit 10⁴–10⁵ timesteps for
   numerical stability, but where an HR-diagram track, a grid handed
   to a population-synthesis code, or a publication figure rarely
