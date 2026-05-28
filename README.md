@@ -4,7 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/astrosimplify.svg)](https://pypi.org/project/astrosimplify/)
 [![Release](https://img.shields.io/github/v/release/JiaWeiTeh/simplify)](https://github.com/JiaWeiTeh/simplify/releases)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20332764.svg)](https://doi.org/10.5281/zenodo.20332764)
-![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
 ![Dependencies](https://img.shields.io/badge/requires-numpy-blue.svg)
 
 Heuristic downsampling of 1-D astrophysical profiles — radial

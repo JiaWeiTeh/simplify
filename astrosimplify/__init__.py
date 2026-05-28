@@ -2316,9 +2316,6 @@ def main():
         default=10_000,
         help="Number of points in the random curve (default: 10000).",
     )
-    # --noise / --no-noise: whether --random should add Gaussian jitter.
-    # BooleanOptionalAction (Python 3.9+) gives both spellings from one
-    # argument and carries the default forward for --help output.
     parser.add_argument(
         "--noise",
         action=argparse.BooleanOptionalAction,
