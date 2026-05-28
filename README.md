@@ -1,26 +1,29 @@
-# simplify
+# astrosimplify
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/astrosimplify.svg)](https://pypi.org/project/astrosimplify/)
 [![Release](https://img.shields.io/github/v/release/JiaWeiTeh/simplify)](https://github.com/JiaWeiTeh/simplify/releases)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20332764.svg)](https://doi.org/10.5281/zenodo.20332764)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
 ![Dependencies](https://img.shields.io/badge/requires-numpy-blue.svg)
 
-Heuristic downsampling of 1-D curves while preserving sharp bends, local
-extrema, and overall shape. Single file, requires only NumPy — matplotlib is
-an optional dependency, needed only for the plotting and animation features.
+Heuristic downsampling of 1-D astrophysical profiles — radial
+density/temperature, stellar evolution tracks, spectral energy
+distributions, and any 1-D scalar curve — while preserving sharp
+transitions, local extrema, and overall shape.  Requires only NumPy;
+matplotlib is optional, for the plotting and animation helpers.
 
 <img src="media/demo_nonoise.gif" alt="Simplification demo" width="560">
 
 
 The animation progressively adds points to a 10 000-point random test
 curve (seed 42, no noise).  Three panels: the simplified overlay (top),
-the signed residual showing where the approximation over-/undershoots
-(middle), and RMSE vs point count on a log-log scale (bottom).  R² ≥ 0.9
-is first reached at **n = 34** (green dashed line).  Generated with:
+the absolute residual `|y − y_interp|` on a log y-axis (middle), and
+RMSE vs point count on a log-log scale (bottom).  R² ≥ 0.9 is first
+reached at **n = 34** (green dashed line).  Generated with:
 
 ```bash
-python simplify.py --random --seed 42 --no-noise --animate media/demo_nonoise.gif --animate-duration 5
+astrosimplify --random --seed 42 --no-noise --animate media/demo_nonoise.gif --animate-duration 5
 ```
 
 ### Real data — Starburst99 5 Myr SED
@@ -37,7 +40,7 @@ by more than 0.05 dex (≈ 12 %) — the green dashed line in the
 log-residual panel.  Generated with:
 
 ```bash
-python simplify.py --randomSB99 --animate media/demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05 --log-y off
+astrosimplify --randomSB99 --animate media/demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05 --log-y off
 ```
 
 (The SB99 `y` is already `log₁₀ L`, so `--log-y off` treats it linearly
@@ -69,9 +72,64 @@ detector spends its budget on the sharp edge and barely touches the
 smooth interior, which is exactly the behaviour you want for
 astrophysical density/temperature/flux profiles.
 
+(The two bundled files `data/bubble_T.dat` and `data/bubble_n.dat` are
+a 100-point pre-simplification of the full 10 000-point profiles, kept
+small so the demo regenerates quickly in-repo; the compression figure
+above describes the original radial grid the data was drawn from.)
+
+## Where this helps
+
+The pattern recurs across astrophysical pipelines: a solver hands you
+10⁴–10⁶ points because the *integrator* needs that density to stay
+stable or to resolve a shock, but the *output* — the curve you save to
+disk, plot, interpolate against, or hand to the next code — only needs
+a small fraction of them. The dense grid then follows you around,
+bloating snapshot files and slowing every downstream operation that
+scales with N (interpolation, FFT, χ² fits, file I/O).
+`astrosimplify` cuts N on *shape* rather than on stride: sharp
+transitions and extrema survive, smooth stretches get thinned, and
+`--max-err` / `--diagnostic` let you fix the accuracy-vs-size trade
+explicitly instead of guessing.
+
+Concrete places this pays off:
+
+- **1-D hydrodynamic snapshots.** Radial `ρ(r)`, `T(r)`, `v(r)`,
+  `M(r)` from spherically-symmetric solvers — stellar-wind bubbles,
+  supernova remnants, accretion shells. Shocks and contact
+  discontinuities have to survive; the smooth interior does not need
+  10 000 samples. The `bubble_T.dat` / `bubble_n.dat` demo above is
+  exactly this case: 10 000 → ≲ 60 points at R² ≥ 0.999.
+- **Stellar evolution tracks.** Codes that emit 10⁴–10⁵ timesteps for
+  numerical stability, but where an HR-diagram track, a grid handed
+  to a population-synthesis code, or a publication figure rarely
+  needs more than a few hundred. The morphology fits the algorithm
+  well: long quiescent stretches interrupted by short, sharp episodes
+  (flashes, blue loops, post-AGB turns).
+- **Spectra, SEDs, and template libraries.** The Starburst99 demo
+  above (1221 → 360 pts at ≤ 0.05 dex) generalises to any model
+  atmosphere, binary/single-star SED, or template that gets convolved
+  against a filter set or fed to a stellar-population-synthesis code.
+  `load_sb99_5myr()` ships with the package, so the run reproduces
+  with no extra downloads.
+- **Cooling functions, opacities, reaction rates.** Tabulated `Λ(T)`,
+  Rosseland opacities, nuclear rates: dense in the supplied table but
+  every solver call only needs an interpolator that hits the
+  breakpoints accurately. Multi-decade `y` is the default regime
+  here, and `log_y="auto"` handles it without ceremony.
+- **Dense outputs from adaptive integrators.** `solve_ivp(...,
+  dense_output=True)`, symplectic schemes, or any integrator whose
+  exported sample grid is much finer than its actual step count —
+  trim the grid down to what downstream tools (plots, fits, handoff
+  to a longer-timescale integrator) actually consume.
+
+The win in each case is the same: smaller files on disk, and
+proportionally cheaper downstream computation, with a worst-case error
+you set explicitly rather than discover after the fact.
+
 ## Contents
 
 - [In reality, curves are much simpler](#in-reality-curves-are-much-simpler)
+- [Where this helps](#where-this-helps)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Python API](#python-api)
@@ -90,32 +148,34 @@ astrophysical density/temperature/flux profiles.
 
 ## Installation
 
-`simplify` is a single file with no packaging — just clone the repo and
-run it in place:
+From PyPI (the recommended path):
+
+```bash
+pip install astrosimplify              # core (NumPy only)
+pip install "astrosimplify[plot]"      # also pulls matplotlib for --plot / --animate
+astrosimplify --help
+```
+
+Or from a checkout, if you want to hack on the source or rerun the
+demo scripts in `media/`:
 
 ```bash
 git clone https://github.com/JiaWeiTeh/simplify.git
 cd simplify
-pip install numpy            # matplotlib too, for --plot / --animate
-python simplify.py --help
+pip install -e ".[plot]"
 ```
 
-To use it from your own project, copy `simplify.py` next to your code (or
-add this directory to your `PYTHONPATH`) and `import simplify`.
+In either case, use it from Python as:
+
+```python
+import astrosimplify as asimp
+x_s, y_s = asimp.simplify(x, y)
+```
 
 ## Quick start
 
-```python
-import numpy as np
-from simplify import simplify, simplify_error
-
-x = np.linspace(0, 10, 10000)
-y = np.sin(x) + 0.5 * np.sin(5 * x)
-
-x_s, y_s = simplify(x, y)                       # 10000 → ~100 points
-metrics = simplify_error(x, y, x_s, y_s)
-print(f"R² = {metrics['r_squared']:.4f}, "
-      f"compression = {metrics['compression']:.1f}x")
+```bash
+astrosimplify --random --no-noise --animate simplify.gif
 ```
 
 `simplify` is a single file with NumPy as its only hard dependency, so it
@@ -124,32 +184,13 @@ drops straight into a script or Jupyter notebook.  See
 [Command line](#command-line) for one-off downsampling of data files
 without writing Python.
 
-## Python API
-
-```python
-import numpy as np
-from simplify import simplify, simplify_error, simplify_plot
-
-x = np.linspace(0, 10, 10000)
-y = np.sin(x) + 0.5 * np.sin(5 * x)
-
-# Simplify (default warn_below_r2 = 0.9)
-x_s, y_s = simplify(x, y)
-
-# Higher nmin for denser output
-x_s, y_s = simplify(x, y, nmin=200)
-
-# Bound the worst-case vertical error.  max_err's units depend on the
-# y-space, so log_y must be explicit: 0.1 in y-units (log_y=False) or
-# 0.1 dex (log_y=True).
-x_s, y_s = simplify(x, y, max_err=0.1, log_y=False)
-
-# Error metrics
-metrics = simplify_error(x, y, x_s, y_s)
-print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:.1f}x")
-
-# Plot
-simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
+```bash
+astrosimplify --random --metrics                          # error table
+astrosimplify --random --diagnostic                       # size/error sweep
+astrosimplify --random --plot                             # comparison plot
+astrosimplify --random --animate demo.gif                 # animated GIF
+astrosimplify --randomSB99 --animate sb99.gif             # real SED data
+astrosimplify --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  # bounded error (--max-err needs explicit --log-y)
 ```
 
 ## Command line
@@ -158,26 +199,15 @@ For one-off downsampling of two-column data files without writing
 Python:
 
 ```bash
-python simplify.py data.csv -o reduced.csv                    # basic
-python simplify.py data.csv --metrics --plot                   # inspect quality
-python simplify.py data.csv --nmin 200                         # denser output
-python simplify.py data.csv --max-err 0.1 --log-y off          # bound worst-case error (--max-err needs explicit --log-y)
-python simplify.py data.csv --animate output.gif               # animation
-python simplify.py data.csv --grad-inc 0.5                     # lower curvature threshold
+astrosimplify data.csv -o reduced.csv                    # basic
+astrosimplify data.csv --metrics --plot                   # inspect quality
+astrosimplify data.csv --nmin 200                         # denser output
+astrosimplify data.csv --max-err 0.1 --log-y off          # bound worst-case error (--max-err needs explicit --log-y)
+astrosimplify data.csv --animate output.gif               # animation
+astrosimplify data.csv --grad-inc 0.5                     # lower curvature threshold
 ```
 
-Built-in demo curves (no input file required):
-
-```bash
-python simplify.py --random --no-noise --animate simplify.gif  # synthetic curve + GIF
-python simplify.py --random --metrics                          # error table
-python simplify.py --random --diagnostic                       # size/error sweep
-python simplify.py --random --plot                             # comparison plot
-python simplify.py --randomSB99 --animate sb99.gif             # real SED data
-python simplify.py --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  # bounded error (--max-err needs explicit --log-y)
-```
-
-Run `python simplify.py --help` for all options.
+Run `astrosimplify --help` for all options.
 
 ## Choosing `nmin` and `max_err` (diagnostic mode)
 
@@ -192,7 +222,7 @@ points while a smaller one keeps only the sharpest features. It runs
 instead of the normal conversion, so no output file is written.
 
 ```bash
-python simplify.py --random --seed 67 --diagnostic
+astrosimplify --random --seed 67 --diagnostic
 ```
 
 ```text
@@ -224,7 +254,7 @@ optimised — **dex when `log_y` is active**, linear otherwise — so the
 grid of before/after panels (4 → 2×2, 5–6 → 2×3, 7–9 → 3×3, …):
 
 ```bash
-python simplify.py --random --seed 67 --diagnostic --nrels 0.9,0.5,0.25 --plot
+astrosimplify --random --seed 67 --diagnostic --nrels 0.9,0.5,0.25 --plot
 ```
 
 ![Diagnostic grid for the random seed-67 curve](media/demo_random_diagnostic.png)
@@ -234,11 +264,39 @@ metrics and the simplified arrays) so you can drive parameter selection
 programmatically:
 
 ```python
-from simplify import random_test_curve, simplify_diagnostic
+from astrosimplify import random_test_curve, simplify_diagnostic
 
 x, y = random_test_curve(seed=67)
 rows = simplify_diagnostic(x, y, nrels=[0.6, 0.3], plot=False)
 print(rows[0]["n_out"], rows[0]["max_err"], rows[0]["r_squared"])
+```
+
+## Python API
+
+```python
+import numpy as np
+from astrosimplify import astrosimplify, simplify_error, simplify_plot
+
+x = np.linspace(0, 10, 10000)
+y = np.sin(x) + 0.5 * np.sin(5 * x)
+
+# Simplify (default warn_below_r2 = 0.9)
+x_s, y_s = simplify(x, y)
+
+# Higher nmin for denser output
+x_s, y_s = simplify(x, y, nmin=200)
+
+# Bound the worst-case vertical error.  max_err's units depend on the
+# y-space, so log_y must be explicit: 0.1 in y-units (log_y=False) or
+# 0.1 dex (log_y=True).
+x_s, y_s = simplify(x, y, max_err=0.1, log_y=False)
+
+# Error metrics
+metrics = simplify_error(x, y, x_s, y_s)
+print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:.1f}x")
+
+# Plot
+simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
 ```
 
 ## Input and output format

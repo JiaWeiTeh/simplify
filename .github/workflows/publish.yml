@@ -1,0 +1,61 @@
+# Publishes the wheel + sdist to PyPI whenever a v*.*.* tag is pushed.
+#
+# One-time setup on PyPI (UI only, no API tokens needed in the repo):
+#   1. Log in to https://pypi.org/manage/account/publishing/
+#   2. "Add a new pending publisher" with:
+#        Owner:              JiaWeiTeh
+#        Repository name:    simplify
+#        Workflow filename:  publish.yml
+#        Environment name:   pypi
+#        PyPI project name:  astrosimplify
+#   3. Once the first publish succeeds, the pending publisher becomes a
+#      real Trusted Publisher.
+#
+# One-time setup on GitHub:
+#   Settings -> Environments -> New environment -> name it "pypi". Optionally
+#   add required reviewers so publishing requires manual approval.
+#
+# After that: `git tag v2.0.0 && git push --tags` builds and publishes
+# automatically.
+
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build
+      - run: python -m build
+      - name: Sanity-check the wheel contents
+        run: |
+          python -m zipfile -l dist/astrosimplify-*.whl
+          python -m zipfile -l dist/astrosimplify-*.whl | grep -q "astrosimplify/data/sb99_5myr.dat"
+          python -m zipfile -l dist/astrosimplify-*.whl | grep -q "astrosimplify/astrosimplify.mplstyle"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/astrosimplify
+    permissions:
+      id-token: write  # OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

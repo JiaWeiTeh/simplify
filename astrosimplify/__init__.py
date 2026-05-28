@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Standalone curve-simplification module.
+astrosimplify: heuristic downsampling of 1-D astrophysical profiles.
 
-Heuristic downsampling of 1-D curves while preserving physically and
-visually important features (sharp bends, local extrema, arc-length
-uniformity).  No dependencies beyond numpy / matplotlib / stdlib.
+Designed for radial density/temperature profiles, stellar evolution
+tracks, spectral energy distributions, and any 1-D scalar curve where
+sharp transitions and local extrema must survive aggressive
+downsampling.  Requires only NumPy; matplotlib is optional, for the
+plotting and animation helpers.
 
 Functions
 ---------
@@ -25,6 +27,8 @@ from typing import Tuple, Union, Sequence
 
 import numpy as np
 
+__version__ = "2.0.0"
+
 __all__ = [
     "simplify",
     "simplify_error",
@@ -33,10 +37,11 @@ __all__ = [
     "simplify_animate",
     "random_test_curve",
     "load_sb99_5myr",
+    "__version__",
 ]
 
 # Path to the bundled matplotlib style file.
-_STYLE_FILE = Path(__file__).parent / "simplify.mplstyle"
+_STYLE_FILE = Path(__file__).parent / "astrosimplify.mplstyle"
 
 # Bundled Starburst99 SED (instantaneous burst, 5 Myr slice).
 _SB99_5MYR_FILE = Path(__file__).parent / "data" / "sb99_5myr.dat"
@@ -415,6 +420,29 @@ def _auto_log_y(y: np.ndarray, log_y) -> bool:
     return float(finite.max()) / y_min > 100.0
 
 
+def _log_ylim_from_positive(
+    values, floor_mult: float = 0.5, ceil_mult: float = 2.0,
+) -> Union[Tuple[float, float], None]:
+    """
+    Compute ``(floor, ceil)`` for a log y-axis from sample magnitudes.
+
+    The floor is ``floor_mult × min |v|>0`` (defaulting to a half-decade
+    below the smallest positive sample); the ceiling is
+    ``ceil_mult × max |v|`` (a factor above the largest).  Returns
+    ``None`` when no positive sample is present, leaving the caller to
+    pick a fallback.
+
+    Used by the residual panels in :func:`simplify_animate` and the
+    paper-figure script ``media/make_bubble_panels.py`` so the
+    floor/ceiling rule stays in one place.
+    """
+    arr = np.abs(np.asarray(values).ravel())
+    positive = arr[arr > 0]
+    if positive.size == 0:
+        return None
+    return float(positive.min()) * floor_mult, float(arr.max()) * ceil_mult
+
+
 def _x_uniform_coverage_idx(
     x: np.ndarray,
     pool_idx: np.ndarray,
@@ -704,10 +732,10 @@ def simplify(
 
     .. code-block:: bash
 
-        python simplify.py profile.csv -o reduced.csv --nmin 200
-        python simplify.py profile.csv --metrics          # print error table
-        python simplify.py profile.csv --plot             # interactive plot
-        python simplify.py profile.csv --animate out.gif  # animated GIF
+        astrosimplify profile.csv -o reduced.csv --nmin 200
+        astrosimplify profile.csv --metrics          # print error table
+        astrosimplify profile.csv --plot             # interactive plot
+        astrosimplify profile.csv --animate out.gif  # animated GIF
     """
     import warnings
 
@@ -1496,13 +1524,15 @@ def simplify_animate(
     """
     Create an animated GIF showing progressive curve simplification.
 
-    The animation builds the simplified curve up from 5 points to the
-    full feature-detected set.  The mandatory set (prominent extrema plus
-    the x-uniform coverage skeleton) follows the same rule as
-    :func:`simplify` and is present from the first frame; the remaining
+    The animation builds the simplified curve up to the full
+    feature-detected set.  The mandatory set (the two curve endpoints,
+    prominent extrema, and the x-uniform coverage skeleton) follows the
+    same rule as :func:`simplify` and is present from the first frame —
+    so the smallest frame contains the mandatory set (typically ~20
+    points for the bundled demos, never fewer than 5), and the remaining
     feature points are added in hierarchical-bisection order so that
-    frames are strictly nested (each frame is a superset of the previous
-    one).  Three panels are shown:
+    frames are strictly nested (each frame is a superset
+    of the previous one).  Three panels are shown:
 
     - **Top panel**: the underlying curve as a thin grey line, with the
       current simplified points overlaid as red dots + line.
@@ -1569,10 +1599,13 @@ def simplify_animate(
     n_orig = x_o.size
 
     # --- Precompute simplification at increasing point counts ---
-    # Start from 5 points and build up to the full feature-detected set.
-    # ``max_err`` is forwarded so the final frame is the same worst-error-
-    # bounded set the caller gets from simplify; the greedy insertions
-    # then enter the frame sweep in bisection order with every other point.
+    # Sweep from a 5-point floor up to the full feature-detected set;
+    # the smallest realised frame ends up at max(5, mandatory.size)
+    # because the mandatory set (endpoints + extrema + coverage skeleton)
+    # is always rendered.  ``max_err`` is forwarded so the final frame
+    # is the same worst-error-bounded set the caller gets from simplify;
+    # the greedy insertions then enter the frame sweep in bisection
+    # order with every other point.
     x_full, y_full = simplify(
         x_o, y_o, warn_below_r2=None, max_err=max_err, log_y=log_y,
     )
@@ -1717,17 +1750,17 @@ def simplify_animate(
     # --- Residual subplot: |y - y_interp| vs x on a log y-axis ---
     # A log scale keeps small late-frame residuals legible (otherwise a
     # huge first-frame error would collapse the rest of the animation
-    # to a flat line).  The floor is set from the smallest positive
-    # residual across all steps, with sensible fallbacks.
-    all_max_errs = np.array([s["max_err"] for s in steps])
-    res_ceil = float(np.max(all_max_errs)) * 1.2
-    positive_res = np.concatenate([
-        np.abs(s["residual"])[np.abs(s["residual"]) > 0] for s in steps
-    ])
-    if positive_res.size > 0:
-        res_floor = float(positive_res.min()) * 0.5
+    # to a flat line).  Degenerate all-zero-residual inputs (e.g. a
+    # perfectly piecewise-linear curve) get a small positive sentinel
+    # range so the log axis still has valid limits.
+    abs_residuals = [np.abs(s["residual"]) for s in steps]
+    flat_abs = (np.concatenate(abs_residuals) if abs_residuals
+                else np.empty(0))
+    ylim = _log_ylim_from_positive(flat_abs, floor_mult=0.5, ceil_mult=1.2)
+    if ylim is None:
+        res_floor, res_ceil = 1e-6, 1.0
     else:
-        res_floor = res_ceil * 1e-6
+        res_floor, res_ceil = ylim
     if max_err is not None:
         res_floor = min(res_floor, max_err * 0.05)
         res_ceil = max(res_ceil, max_err * 5.0)
@@ -1740,7 +1773,10 @@ def simplify_animate(
         ax_res.axhline(max_err, color="tab:green", ls="--", lw=1.0,
                        alpha=0.8, label=rf"max_err $={max_err:g}$")
         ax_res.legend(loc="upper right", fontsize=8)
-    res_fill = ax_res.fill_between(x_o, res_floor, np.full_like(x_o, res_floor),
+    # Each step's |residual|, pre-clipped to the log floor once so the
+    # per-frame _update doesn't redo it for repeated frames.
+    abs_res_plots = [np.maximum(a, res_floor) for a in abs_residuals]
+    res_fill = ax_res.fill_between(x_o, res_floor, res_floor,
                                    color="tab:orange", alpha=0.4)
     res_line, = ax_res.plot([], [], "-", color="tab:orange", lw=0.6)
 
@@ -1820,9 +1856,7 @@ def simplify_animate(
         )
 
         # --- Middle panel: update residual (|y - y_interp|, log y-axis) ---
-        abs_res = np.abs(s["residual"])
-        # Clip to the floor so the fill stays on-axis on a log scale.
-        abs_res_plot = np.maximum(abs_res, res_floor)
+        abs_res_plot = abs_res_plots[step_idx]
         res_fill.remove()
         res_fill = ax_res.fill_between(x_o, res_floor, abs_res_plot,
                                        color="tab:orange", alpha=0.4)
@@ -2028,10 +2062,10 @@ def main():
 
     Usage
     -----
-    python simplify.py input.csv -o output.csv --nmin 150 --grad-inc 0.5
-    python simplify.py input.csv --metrics --plot
-    python simplify.py input.csv --diagnostic --plot
-    python simplify.py input.csv --animate simplify.gif --animate-duration 5
+    astrosimplify input.csv -o output.csv --nmin 150 --grad-inc 0.5
+    astrosimplify input.csv --metrics --plot
+    astrosimplify input.csv --diagnostic --plot
+    astrosimplify input.csv --animate simplify.gif --animate-duration 5
 
     Positional arguments
     --------------------
@@ -2108,14 +2142,14 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        prog="simplify",
+        prog="astrosimplify",
         description=(
             "Downsample a two-column (x, y) data file while preserving "
             "sharp features, local extrema, and overall curve shape."
         ),
         epilog=(
             "Example:\n"
-            "  python simplify.py data.csv -o reduced.csv --nmin 200\n\n"
+            "  astrosimplify data.csv -o reduced.csv --nmin 200\n\n"
             "The algorithm combines six stages:\n"
             "  1.  Scale-invariant bend detection (Menger curvature\n"
             "      in normalised coords, gated by --grad-inc)\n"
@@ -2499,10 +2533,10 @@ if __name__ == "__main__":
         print()
         print("  Or from the command line:")
         print()
-        print("    python simplify.py data.csv -o out.csv --metrics")
-        print("    python simplify.py data.csv --diagnostic")
-        print("    python simplify.py data.csv --plot")
-        print("    python simplify.py data.csv --animate simplify.gif")
+        print("    astrosimplify data.csv -o out.csv --metrics")
+        print("    astrosimplify data.csv --diagnostic")
+        print("    astrosimplify data.csv --plot")
+        print("    astrosimplify data.csv --animate simplify.gif")
         print()
         print("  Run with --help for all options.")
         print("=" * 60)

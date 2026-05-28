@@ -1,0 +1,48 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.8", "3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install (core only, NumPy)
+        run: pip install -e .
+      - name: Import + version
+        run: |
+          python -c "import astrosimplify as a; assert a.__version__, a.__version__; print(a.__version__)"
+      - name: CLI is wired
+        run: astrosimplify --help > /dev/null
+      - name: Bundled SB99 data loads from the package
+        run: |
+          python -c "import astrosimplify as a; x, y = a.load_sb99_5myr(); assert x.shape == (1221,) and y.shape == (1221,)"
+      - name: --randomSB99 CLI end-to-end (writes CSV)
+        run: |
+          astrosimplify --randomSB99 -o sb.csv
+          test -s sb.csv
+      - name: --metrics on a real input file
+        run: astrosimplify data/bubble_T.dat --metrics
+      - name: Python API round-trip + error bound
+        run: |
+          python - <<'PY'
+          import numpy as np, astrosimplify as a
+          rng = np.random.default_rng(0)
+          x = np.linspace(0, 10, 5000)
+          y = np.sin(x) + 0.3 * np.sin(7*x) + 0.05 * rng.standard_normal(x.size)
+          xs, ys = a.simplify(x, y, nmin=200)
+          m = a.simplify_error(x, y, xs, ys)
+          assert xs.size < x.size, (xs.size, x.size)
+          assert m["r_squared"] > 0.95, m["r_squared"]
+          print(f"OK: {x.size} -> {xs.size}, R^2 = {m['r_squared']:.4f}")
+          PY
