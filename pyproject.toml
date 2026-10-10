@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,8 @@ name = "astrosimplify"
 version = "2.0.0"
 description = "Heuristic downsampling of 1-D astrophysical profiles preserving sharp transitions, local extrema, and overall shape."
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Jia Wei Teh" }]
 requires-python = ">=3.9"
 keywords = [
@@ -21,7 +22,6 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Topic :: Scientific/Engineering :: Astronomy",
     "Topic :: Scientific/Engineering :: Visualization",
     "Programming Language :: Python :: 3",
@@ -46,7 +46,8 @@ Issues        = "https://github.com/JiaWeiTeh/simplify/issues"
 Documentation = "https://github.com/JiaWeiTeh/simplify#readme"
 
 [tool.setuptools]
-packages = ["astrosimplify"]
+packages = ["astrosimplify", "astrosimplify.data"]
 
 [tool.setuptools.package-data]
-astrosimplify = ["*.mplstyle", "data/*.dat"]
+astrosimplify = ["*.mplstyle"]
+"astrosimplify.data" = ["*.dat"]

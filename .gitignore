@@ -6,3 +6,28 @@ simplified_output.csv
 build/
 dist/
 *.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Python caches
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Files written by the README examples (run from the repo root)
+/reduced.csv
+/comparison.png
+/demo.gif
+/output.gif
+/sb99.gif
+/sb.csv
