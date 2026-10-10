@@ -1,163 +1,52 @@
 # astrosimplify
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/astrosimplify.svg)](https://pypi.org/project/astrosimplify/)
 [![Release](https://img.shields.io/github/v/release/JiaWeiTeh/simplify)](https://github.com/JiaWeiTeh/simplify/releases)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20332764.svg)](https://doi.org/10.5281/zenodo.20332764)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
 ![Dependencies](https://img.shields.io/badge/requires-numpy-blue.svg)
 
-Heuristic downsampling of 1-D astrophysical profiles — radial
-density/temperature, stellar evolution tracks, spectral energy
-distributions, and any 1-D scalar curve — while preserving sharp
+Heuristic downsampling of 1-D astrophysical profiles — radial density and
+temperature profiles, stellar evolution tracks, spectral energy
+distributions, and any other 1-D scalar curve — while preserving sharp
 transitions, local extrema, and overall shape.  Requires only NumPy;
 matplotlib is optional, for the plotting and animation helpers.
 
-<img src="media/demo_nonoise.gif" alt="Simplification demo" width="560">
-
+<img src="https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_nonoise.gif" alt="Simplification demo" width="560">
 
 The animation progressively adds points to a 10 000-point random test
-curve (seed 42, no noise).  Three panels: the simplified overlay (top),
-the absolute residual `|y − y_interp|` on a log y-axis (middle), and
-RMSE vs point count on a log-log scale (bottom).  R² ≥ 0.9 is first
-reached at **n = 34** (green dashed line).  Generated with:
+curve (seed 42, no noise).  Top: the simplified overlay.  Middle: the
+absolute residual `|y − y_interp|` on a log axis.  Bottom: RMSE versus
+point count.  R² ≥ 0.9 is first reached at **n = 34** (green dashed line).
 
 ```bash
-astrosimplify --random --seed 42 --no-noise --animate media/demo_nonoise.gif --animate-duration 5
+astrosimplify --random --seed 42 --no-noise --animate demo.gif --animate-duration 5
 ```
 
-### Real data — Starburst99 5 Myr SED
-
-<img src="media/demo_sb99_tight.gif" alt="Starburst99 + max_err" width="560">
-
-1221 pts → **360** pts (3.4× compression).  The curve is the
-Starburst99 `LOG (TOTAL)` SED column at 5 Myr (instantaneous burst,
-Z = Z☉) — a real astrophysical spectrum spanning 91 Å to 1.6 × 10⁶ Å
-in wavelength and ~6 dex in luminosity.  `x` is `log10(λ/Å)` and `y`
-is `log10(L_λ / (erg s⁻¹ Å⁻¹))`.  The GIF uses `max_err = 0.05`, which
-inserts points at the worst-error locations until no sample deviates
-by more than 0.05 dex (≈ 12 %) — the green dashed line in the
-log-residual panel.  Generated with:
-
-```bash
-astrosimplify --randomSB99 --animate media/demo_sb99_tight.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05 --log-y off
-```
-
-(The SB99 `y` is already `log₁₀ L`, so `--log-y off` treats it linearly
-and `--max-err 0.05` means ≤ 0.05 dex. `--max-err` always needs an
-explicit `--log-y on|off` so its units are unambiguous.)
-
-### In reality, curves are much simpler
-
-The random test curve at the top is a deliberate worst case — dense,
-noisy, and full of competing wiggles. The curves you *actually* want to
-downsample are usually far tamer. A common case is a radial
-temperature or density profile from a simulation: a smooth bulk with one
-or two sharp transitions and a lot of redundant samples in between.
-
-Below are the temperature `T(r)` and density `n(r)` profiles from the
-interior of a stellar-wind bubble (model `4e3_sfe001_n5e2_PL0`).
-Temperature falls gently then plunges at the bubble edge; density rises
-then spikes at the same radius — the contact discontinuity where the hot
-interior meets the cool swept-up shell.
-
-| temperature `log₁₀ T(r)` | density `log₁₀ n(r)` |
-|:---:|:---:|
-| ![Bubble temperature profile](media/demo_bubble_T.gif) | ![Bubble density profile](media/demo_bubble_n.gif) |
-
-These profiles are sampled on a **30 000-point** radial grid. Fewer than
-**60 points reproduce either curve to R² ≥ 0.999** — a ~500× reduction —
-and the first ~30 already clear that bar (bottom panel). The bend
-detector spends its budget on the sharp edge and barely touches the
-smooth interior, which is exactly the behaviour you want for
-astrophysical density/temperature/flux profiles.
-
-(The two bundled files `data/bubble_T.dat` and `data/bubble_n.dat` are
-a 100-point pre-simplification of the full 30 000-point profiles, kept
-small so the demo regenerates quickly in-repo; the compression figure
-above describes the original radial grid the data was drawn from.)
-
-## Where this helps
-
-The pattern recurs across astrophysical pipelines: a solver hands you
-10⁴–10⁶ points because the *integrator* needs that density to stay
-stable or to resolve a shock, but the *output* — the curve you save to
-disk, plot, interpolate against, or hand to the next code — only needs
-a small fraction of them. The dense grid then follows you around,
-bloating snapshot files and slowing every downstream operation that
-scales with N (interpolation, FFT, χ² fits, file I/O).
-`astrosimplify` cuts N on *shape* rather than on stride: sharp
-transitions and extrema survive, smooth stretches get thinned, and
-`--max-err` / `--diagnostic` let you fix the accuracy-vs-size trade
-explicitly instead of guessing.
-
-Concrete places this pays off:
-
-- **1-D hydrodynamic snapshots.** Radial `ρ(r)`, `T(r)`, `v(r)`,
-  `M(r)` from spherically-symmetric solvers — stellar-wind bubbles,
-  supernova remnants, accretion shells. Shocks and contact
-  discontinuities have to survive; the smooth interior does not need
-  30 000 samples. The `bubble_T.dat` / `bubble_n.dat` demo above is
-  exactly this case: 30 000 → ≲ 60 points at R² ≥ 0.999.
-- **Stellar evolution tracks.** Codes that emit 10⁴–10⁵ timesteps for
-  numerical stability, but where an HR-diagram track, a grid handed
-  to a population-synthesis code, or a publication figure rarely
-  needs more than a few hundred. The morphology fits the algorithm
-  well: long quiescent stretches interrupted by short, sharp episodes
-  (flashes, blue loops, post-AGB turns).
-- **Spectra, SEDs, and template libraries.** The Starburst99 demo
-  above (1221 → 360 pts at ≤ 0.05 dex) generalises to any model
-  atmosphere, binary/single-star SED, or template that gets convolved
-  against a filter set or fed to a stellar-population-synthesis code.
-  `load_sb99_5myr()` ships with the package, so the run reproduces
-  with no extra downloads.
-- **Cooling functions, opacities, reaction rates.** Tabulated `Λ(T)`,
-  Rosseland opacities, nuclear rates: dense in the supplied table but
-  every solver call only needs an interpolator that hits the
-  breakpoints accurately. Multi-decade `y` is the default regime
-  here, and `log_y="auto"` handles it without ceremony.
-- **Dense outputs from adaptive integrators.** `solve_ivp(...,
-  dense_output=True)`, symplectic schemes, or any integrator whose
-  exported sample grid is much finer than its actual step count —
-  trim the grid down to what downstream tools (plots, fits, handoff
-  to a longer-timescale integrator) actually consume.
-
-The win in each case is the same: smaller files on disk, and
-proportionally cheaper downstream computation, with a worst-case error
-you set explicitly rather than discover after the fact.
-
-## Contents
-
-- [In reality, curves are much simpler](#in-reality-curves-are-much-simpler)
-- [Where this helps](#where-this-helps)
-- [Installation](#installation)
-- [Quick start](#quick-start)
-- [Python API](#python-api)
-- [Command line](#command-line)
-- [Choosing `nmin` and `max_err` (diagnostic mode)](#choosing-nmin-and-max_err-diagnostic-mode)
-- [Input and output format](#input-and-output-format)
-- [How it works (the short version)](#how-it-works-the-short-version)
-- [Algorithm](#algorithm)
-- [Parameters](#parameters)
-- [Multi-decade data](#multi-decade-data-density-temperature-flux-profiles)
-- [Limitations](#limitations)
-- [Dependencies](#dependencies)
-- [Citation](#citation)
-- [License](#license)
-- [Testimonials](#testimonials)
+Typical inputs are curves where the *solver* needed 10⁴–10⁶ points for
+stability but the *saved output* does not: radial `ρ(r)`, `T(r)`, `v(r)`
+from 1-D hydrodynamics, stellar evolution tracks, SEDs and spectral
+templates, tabulated cooling functions and opacities, and dense output
+from adaptive integrators.  `astrosimplify` thins on *shape* rather than
+on stride, so shocks, contact discontinuities, and extrema survive while
+smooth stretches are reduced to a handful of points.
 
 ## Installation
 
-From PyPI (the recommended path):
+Python 3.9 or newer.  The only hard dependency is NumPy.
 
 ```bash
-pip install astrosimplify              # core (NumPy only)
-pip install "astrosimplify[plot]"      # also pulls matplotlib for --plot / --animate
-astrosimplify --help
+pip install "astrosimplify @ git+https://github.com/JiaWeiTeh/simplify.git"
 ```
 
-Or from a checkout, if you want to hack on the source or rerun the
-demo scripts in `media/`:
+Add the `plot` extra to pull in matplotlib for `--plot`, `--animate`, and
+the diagnostic grid:
+
+```bash
+pip install "astrosimplify[plot] @ git+https://github.com/JiaWeiTeh/simplify.git"
+```
+
+To work on the source or rerun the figure scripts in `media/`:
 
 ```bash
 git clone https://github.com/JiaWeiTeh/simplify.git
@@ -165,12 +54,7 @@ cd simplify
 pip install -e ".[plot]"
 ```
 
-In either case, use it from Python as:
-
-```python
-import astrosimplify as asimp
-x_s, y_s = asimp.simplify(x, y)
-```
+Check the install with `astrosimplify --help`.
 
 ## Quick start
 
@@ -181,126 +65,108 @@ import astrosimplify as asimp
 x = np.linspace(0, 10, 10000)
 y = np.sin(x) + 0.5 * np.sin(5 * x)
 
-x_s, y_s = asimp.simplify(x, y)                       # 10000 → ~100 points
+x_s, y_s = asimp.simplify(x, y)                   # 10000 → ~200 points
 metrics = asimp.simplify_error(x, y, x_s, y_s)
 print(f"R² = {metrics['r_squared']:.4f}, "
       f"compression = {metrics['compression']:.1f}x")
 ```
 
-`astrosimplify` has NumPy as its only hard dependency, so it drops
-straight into a script or Jupyter notebook.  See
-[Python API](#python-api) for the full set of options, or
-[Command line](#command-line) for one-off downsampling of data files
-without writing Python.
-
-## Python API
+Common variations:
 
 ```python
-import numpy as np
-from astrosimplify import simplify, simplify_error, simplify_plot
-
-x = np.linspace(0, 10, 10000)
-y = np.sin(x) + 0.5 * np.sin(5 * x)
-
-# Simplify (default warn_below_r2 = 0.9)
-x_s, y_s = simplify(x, y)
-
-# Higher nmin for denser output
-x_s, y_s = simplify(x, y, nmin=200)
-
-# Bound the worst-case vertical error.  max_err's units depend on the
-# y-space, so log_y must be explicit: 0.1 in y-units (log_y=False) or
-# 0.1 dex (log_y=True).
-x_s, y_s = simplify(x, y, max_err=0.1, log_y=False)
-
-# Error metrics
-metrics = simplify_error(x, y, x_s, y_s)
-print(f"R² = {metrics['r_squared']:.4f}, compression = {metrics['compression']:.1f}x")
-
-# Plot
-simplify_plot(x, y, x_s, y_s, save_path="comparison.png")
+x_s, y_s = asimp.simplify(x, y, nmin=200)                       # denser output
+x_s, y_s = asimp.simplify(x, y, max_err=0.1, log_y=False)       # bound the worst-case error
+asimp.simplify_plot(x, y, x_s, y_s, save_path="comparison.png")  # before/after figure
 ```
 
-## Command line
-
-For one-off downsampling of two-column data files without writing
-Python:
+The same operations from the command line, on a two-column text file:
 
 ```bash
-astrosimplify data.csv -o reduced.csv                    # basic
-astrosimplify data.csv --metrics --plot                   # inspect quality
-astrosimplify data.csv --nmin 200                         # denser output
-astrosimplify data.csv --max-err 0.1 --log-y off          # bound worst-case error (--max-err needs explicit --log-y)
-astrosimplify data.csv --animate output.gif               # animation
-astrosimplify data.csv --grad-inc 0.5                     # lower curvature threshold
+astrosimplify data.csv -o reduced.csv                 # basic
+astrosimplify data.csv --metrics --plot               # inspect quality
+astrosimplify data.csv --nmin 200                     # denser output
+astrosimplify data.csv --max-err 0.1 --log-y off      # bound worst-case error
+astrosimplify data.csv --animate output.gif           # animation
 ```
 
-Built-in demo curves (no input file required):
+Built-in demo curves need no input file:
 
 ```bash
-astrosimplify --random --no-noise --animate simplify.gif  # synthetic curve + GIF
-astrosimplify --random --metrics                          # error table
-astrosimplify --random --diagnostic                       # size/error sweep
-astrosimplify --random --plot                             # comparison plot
-astrosimplify --randomSB99 --animate sb99.gif             # real SED data
-astrosimplify --randomSB99 --max-err 0.05 --log-y off --animate sb99_tight.gif  # bounded error (--max-err needs explicit --log-y)
+astrosimplify --random --metrics                      # synthetic curve, error table
+astrosimplify --random --diagnostic                   # size/error sweep
+astrosimplify --randomSB99 --animate sb99.gif         # bundled Starburst99 SED
 ```
 
-Run `astrosimplify --help` for all options.
+`--max-err` always needs an explicit `--log-y on|off` (or `log_y=True/False`
+in Python) because its units follow the y-space: dex in log mode, raw
+y-units otherwise.
 
-## Choosing `nmin` and `max_err` (diagnostic mode)
+## Real-data examples
 
-Not sure how aggressively to downsample, or what `--max-err` to ask for?
-`--diagnostic` sweeps a handful of *relative* output sizes
-(`nrel = n_out / n_orig`) and prints what each one buys you — the point
-count, the worst-case error, and the R². Each row keeps **exactly**
-`round(nrel · n_orig)` points: the most important ones first (ranked by
-greedy worst-error refinement — the same mechanism `--max-err` uses), so a
-larger `nrel` over-populates the curve with progressively less important
-points while a smaller one keeps only the sharpest features. It runs
-instead of the normal conversion, so no output file is written.
+### Starburst99 5 Myr SED
+
+<img src="https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_sb99_tight.gif" alt="Starburst99 SED with max_err" width="560">
+
+1221 → **360** points (3.4× compression).  The curve is the Starburst99
+`LOG (TOTAL)` column at 5 Myr (instantaneous burst, Z = Z☉), spanning
+91 Å to 1.6 × 10⁶ Å and ~6 dex in luminosity, with `x = log10(λ/Å)` and
+`y = log10(L_λ)`.  With `max_err = 0.05` points are inserted at the
+worst-error locations until no sample deviates by more than 0.05 dex.
+The data ships with the package as `load_sb99_5myr()`.
+
+```bash
+astrosimplify --randomSB99 --animate sb99.gif --animate-duration 6 --r2-target 0.999 --max-err 0.05 --log-y off
+```
+
+### Stellar-wind bubble profiles
+
+Temperature `T(r)` and density `n(r)` inside a stellar-wind bubble: a
+smooth interior with one sharp transition at the contact discontinuity.
+
+| temperature `log₁₀ T(r)` | density `log₁₀ n(r)` |
+|:---:|:---:|
+| ![Bubble temperature profile](https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_bubble_T.gif) | ![Bubble density profile](https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_bubble_n.gif) |
+
+The original profiles sit on a **30 000-point** radial grid; fewer than
+**60 points reproduce either curve to R² ≥ 0.999**, a ~500× reduction.
+The bend detector spends its budget on the edge and barely touches the
+smooth interior.  The bundled `data/bubble_T.dat` and `data/bubble_n.dat`
+are a 100-point pre-simplification of the full grid so the demo
+regenerates quickly; see `media/make_bubble_gifs.py`.
+
+## Choosing `nmin` and `max_err`
+
+`--diagnostic` sweeps several relative output sizes
+(`nrel = n_out / n_orig`), keeping the most important points first, and
+prints the point count, worst-case error, and R² for each.  No output
+file is written.
 
 ```bash
 astrosimplify --random --seed 67 --diagnostic
 ```
 
 ```text
-  Diagnostic: random curve (10000 pts, seed=67)
-  n_orig = 10000    working space: linear-y
-  --------------------------------------------------------
    nrel    n_out   compression      max_err        R^2
   --------------------------------------------------------
    0.80     8000          1.2x    3.056e-03   1.000000
    0.30     3000          3.3x    1.573e-02   0.999976
    0.10     1000         10.0x    2.921e-02   0.999922
    0.01      100        100.0x    8.997e-02   0.999665
-  --------------------------------------------------------
-  max_err = worst-case |error| in linear-y space (pass as --max-err).
 ```
 
-Read it as a budget-vs-accuracy curve: even at `nrel = 0.01` (100 points, a
-100× compression) R² is still 0.9997 and the worst-case error is 0.09, and
-every extra slice of budget shaves the worst case down further (0.029 at
-10 %, 0.016 at 30 %, 0.003 at 80 %). The `max_err` column is the direct
-guide to `--max-err`: if you can live with a ~0.03 worst-case error,
-`nrel = 0.1` (a 10× compression) is plenty; if you need 0.003, you'll want
-closer to `nrel = 0.8`.
-
-The reported `max_err` and `R^2` are always in the y-space the pipeline
-optimised — **dex when `log_y` is active**, linear otherwise — so the
-`max_err` value drops straight into `--max-err`. Customise the targets with
-`--nrels`, and add `--plot` (or `--plot-save PATH`) to draw a near-square
-grid of before/after panels (4 → 2×2, 5–6 → 2×3, 7–9 → 3×3, …):
+Read it as a budget-versus-accuracy table.  The `max_err` column is in
+the same y-space the pipeline optimised (dex when `log_y` is active), so
+it drops straight into `--max-err`.  Customise the targets with `--nrels`
+and add `--plot` or `--plot-save PATH` for a grid of before/after panels:
 
 ```bash
 astrosimplify --random --seed 67 --diagnostic --nrels 0.9,0.5,0.25 --plot
 ```
 
-![Diagnostic grid for the random seed-67 curve](media/demo_random_diagnostic.png)
+<img src="https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_random_diagnostic.png" alt="Diagnostic grid" width="560">
 
-From Python the same sweep returns a list of per-`nrel` dicts (with the
-metrics and the simplified arrays) so you can drive parameter selection
-programmatically:
+From Python, `simplify_diagnostic` returns one dict per `nrel` with the
+metrics and the simplified arrays:
 
 ```python
 from astrosimplify import random_test_curve, simplify_diagnostic
@@ -312,176 +178,90 @@ print(rows[0]["n_out"], rows[0]["max_err"], rows[0]["r_squared"])
 
 ## Input and output format
 
-The CLI reads a plain two-column text file of `x y` pairs, one sample per
-line, sorted or unsorted (it is sorted internally by `x`):
+The CLI reads a plain two-column text file of `x y` pairs, one sample
+per line, in any order (it is sorted by `x` internally):
 
-- **`.csv` files** are read comma-delimited; **any other extension** is
-  read whitespace-delimited.
-- Lines beginning with `#` are treated as comments and skipped, so a
-  header row like `# x,y` is fine.
-- Exactly two columns are expected: the first is `x`, the second is `y`.
+- `.csv` files are read comma-delimited; any other extension is read
+  whitespace-delimited.
+- Lines beginning with `#` are comments, so a `# x,y` header is fine.
+- Exactly two columns: the first is `x`, the second is `y`.
 
-```text
-# x,y
-0.0,1.000
-0.1,0.995
-0.2,0.980
-...
-```
-
-Output is written with `--output/-o` (default `simplified_output.csv`) as
-a comma-delimited file with a `# x,y` header — the same format the reader
-accepts, so simplified files can be fed straight back in.
-
-## How it works (the short version)
-
-You have a curve with thousands of points and you want to keep only the
-few that matter. Which ones matter? `simplify` answers that with four
-simple ideas:
-
-- **Keep the bends.** Where the curve turns sharply, you need a point to
-  capture the corner. Long straight stretches barely need any.
-- **Keep the peaks and valleys.** The high and low points are what your
-  eye remembers, so they always make the cut.
-- **Spread the rest out fairly.** Don't crowd every point into the busy
-  region — make sure every part of the curve gets some representation,
-  and rank features by how *important* they are so the big ones never
-  get dropped.
-- **Check the error and clean up.** Measure how far the simplified curve
-  strays from the original. Drop any leftover point that sits on a
-  straight line between its neighbours (it adds nothing), and optionally
-  keep adding points back until the worst gap is under a limit you set.
-
-That's it. The section below is the same four ideas spelled out
-precisely, with the math and the edge cases.
-
-## Algorithm
-
-The input is sorted by x and near-duplicate consecutive samples are
-collapsed (ODE-solver stagnation).  Three independent feature detectors
-populate a candidate pool, a topological-persistence filter marks the
-visually important extrema as mandatory, x-uniform coverage promotes
-one point per chunk, an optional greedy loop bounds the worst-case
-pointwise error, and a final collinearity pass removes points that lie
-on the chord between their neighbours:
-
-1. **Scale-invariant bend detection** — Menger curvature κ (the
-   reciprocal of the circumradius of each consecutive triplet) is
-   computed in *normalised* `(x, y)` coordinates (both rescaled to
-   `[0, 1]`). A point is flagged when κ exceeds `grad_inc`.  Running
-   in normalised coordinates makes `grad_inc` dimensionless — the same
-   value works at any axis scale.
-
-2. **Refined sign-change detection** — every point where the first
-   derivative changes sign is a candidate extremum.  Because the
-   sign flip occurs between consecutive samples, the refinement picks
-   whichever of the two neighbours is more extreme (higher for a max,
-   lower for a min).
-
-3. **Arc-length sampling** — the differential arc length
-   `ds = sqrt((Δx/range_x)² + (Δy/range_y)²)` in normalised
-   `[0, 1]²` coordinates treats both axes symmetrically.  The
-   cumulative arc length is divided into `nmin` equal bins and one
-   point is selected at each bin boundary — dense where the curve
-   changes rapidly, sparse where it is flat.  Unlike the older
-   y-only metric `sum(|Δy|)`, a long gentle slope receives points
-   proportional to its x-span, which prevents high-amplitude regions
-   from starving gradual ones.
-
-4. **Topological persistence (mandatory set)** — for each extremum,
-   `_peak_prominences` computes the peak prominence (minimum descent
-   from a local max, or ascent from a local min, needed to reach a
-   strictly more extreme point) in a single O(n log n) monotonic-stack
-   pass. Extrema with prominence ≥ 5 % of the y-range are marked
-   **mandatory** and always retained, so big features never flicker
-   in and out with changing `nmin`.
-
-4b. **X-uniform mandatory coverage** — the x-domain is split into 20
-   equal-width chunks and the feature-pool point nearest each chunk
-   centre is promoted into the mandatory set alongside the prominent
-   extrema.  This thin x-uniform skeleton guarantees every part of
-   the x-axis gets at least one retained point, complementing the
-   arc-length sampler for chunks with very little curve length per
-   x-span.
-
-5. **Greedy max-error reduction** — when `max_err` is set, a greedy
-   loop finds the original data point with the largest vertical
-   (fixed-x) interpolation error and inserts it into the retained set,
-   repeating until the worst-case absolute error drops below `max_err`.
-   The tolerance lives in the working y-space, so its units depend on
-   `log_y` (dex when on, raw y-units when off) — which is why `log_y`
-   must be set explicitly alongside `max_err`.  Points inserted by this
-   loop are protected from the subsequent collinearity prune.
-
-6. **Collinearity prune** — a vectorised sweep drops any point whose
-   y value is within 0.1 % of the y-range of the chord between its
-   two surviving neighbours. Endpoints, mandatory extrema, and
-   `max_err` insertions are protected. This removes redundant samples
-   on linear and horizontal segments.
-
-After all stages, the output's R² is checked against `warn_below_r2`
-and a `UserWarning` is emitted if it falls short — purely
-informational, the output is not changed.
+Output goes to `--output/-o` (default `simplified_output.csv`) as a
+comma-delimited file with a `# x,y` header, so simplified files can be
+fed straight back in.
 
 ## Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `nmin` | 100 | Target minimum output samples for arc-length sampling |
-| `grad_inc` | 1.0 | Bend sensitivity (dimensionless, scale-invariant); fires when Menger curvature in normalised coords > `grad_inc` |
-| `warn_below_r2` | 0.9 | Soft R² quality threshold; a `UserWarning` is emitted when the output falls below this value.  Pass `None` to disable. |
-| `max_err` | `None` | Maximum allowed absolute **vertical** (fixed-x) interpolation error — the error you incur using the curve as a function of x. A greedy loop inserts points until no sample deviates by more than this. **Units follow `log_y`:** raw y-units when `log_y=False`, dex when `log_y=True` (so `0.1` is ≤ 0.1 dex ≈ 26 % in log mode). Because of this bond, `log_y` **must** be set explicitly (`True`/`False`) when `max_err` is used — `log_y="auto"` raises. |
-| `log_y` | `"auto"` | Work in log-y space for every internal feature detector.  `"auto"` activates when every `y > 0` and `max(y)/min(y) > 100`; pass `True` / `False` to force. Also fixes the units of `max_err`, so it cannot stay `"auto"` when `max_err` is set. |
-| `dedup_tol` | `1e-6` | Stagnation tolerance for collapsing near-duplicate consecutive samples (ODE-solver artefact). A `UserWarning` reports how many points were collapsed when it fires. Set to `0` to disable, or smaller to collapse fewer. |
+| `nmin` | 100 | Target minimum number of output samples for arc-length sampling. |
+| `grad_inc` | 1.0 | Bend sensitivity (dimensionless). A point is kept when the Menger curvature in normalised coordinates exceeds this value. |
+| `warn_below_r2` | 0.9 | Emit a `UserWarning` if the output R² falls below this. `None` disables the check. |
+| `max_err` | `None` | Maximum allowed vertical (fixed-x) interpolation error. A greedy loop inserts points until no sample deviates by more than this. Units follow `log_y` (dex when on, raw y-units when off), so `log_y` must be set explicitly when `max_err` is used. |
+| `log_y` | `"auto"` | Run the feature detectors in `log10(y)`. `"auto"` activates when every `y > 0` and `max(y)/min(y) > 100`; pass `True`/`False` to force. The returned arrays always contain the raw `y`. |
+| `dedup_tol` | `1e-6` | Tolerance for collapsing near-duplicate consecutive samples (ODE-solver stagnation). `0` disables. |
 
-## Multi-decade data (density, temperature, flux profiles)
+## How it works
 
-Astrophysical profiles that span several orders of magnitude — e.g.
-density or temperature inside an interstellar bubble, where ISM
-(~1 cm⁻³) to shocked shell (~10⁶ cm⁻³) is routine — need log-y
-handling, because the linear arc-length sampler would be dominated by
-the peak amplitude.  `log_y="auto"` (the default) switches every
-internal detector onto `log10(y)` when the input is strictly positive
-and spans ≥ 2 decades; the output arrays still contain the caller's
-raw `y` values.
+The input is sorted by `x` and near-duplicate consecutive samples are
+collapsed.  Then:
 
-The `simplify_error` helper and the CLI's `--metrics` flag report
-`log_r_squared`, `log_rms_err`, and `log_max_dex_err` whenever `y` is
-strictly positive, so quality assessments on such data are in the
-right scale by default.  When rendering, use `plt.semilogy` (or equivalent)
-on the simplified points — that interpolates between them in log-y
-space, which is what the algorithm's internal arc-length sampler assumed.
+1. **Bend detection.** Menger curvature of each consecutive triplet,
+   computed in `(x, y)` coordinates normalised to `[0, 1]`, flags corners
+   where it exceeds `grad_inc`.  Normalising makes `grad_inc`
+   scale-invariant.
+2. **Extrema.** Every sign change of the first derivative is a candidate
+   extremum; the more extreme of the two neighbours is taken.
+3. **Arc-length sampling.** The cumulative arc length in normalised
+   coordinates is split into `nmin` equal bins and one point is taken per
+   bin, so dense regions get more points without starving gentle slopes.
+4. **Mandatory set.** Extrema with topological prominence ≥ 5 % of the
+   y-range are always kept, and the x-axis is split into 20 chunks with
+   one feature point promoted per chunk, so every stretch of `x` is
+   represented.
+5. **Greedy error bound** (when `max_err` is set).  Repeatedly insert the
+   original point with the largest vertical interpolation error until the
+   worst case is below `max_err`.
+6. **Collinearity prune.** Drop any remaining point lying within 0.1 % of
+   the y-range of the chord between its neighbours.  Endpoints, mandatory
+   extrema, and `max_err` insertions are protected.
+
+Finally the output R² is compared against `warn_below_r2` and a
+`UserWarning` is emitted if it falls short; the output is not changed.
+
+For multi-decade data (density, temperature, flux) `log_y="auto"`
+switches every detector onto `log10(y)` when the input is strictly
+positive and spans at least two decades.  `simplify_error` and
+`--metrics` then also report `log_r_squared`, `log_rms_err`, and
+`log_max_dex_err`.  Plot such output with `plt.semilogy` so the
+interpolation between kept points happens in log space, as the sampler
+assumed.
 
 ## Limitations
 
-- **1-D functions only.** The input must be a single-valued curve `y(x)`.
-  Closed loops, self-intersecting paths, or multi-valued data are not
-  supported — points are sorted by `x` before processing.
-- **Heuristic, not optimal.** The point selection is a fast set of
-  heuristics, not a globally optimal solver (e.g. it does not minimise
-  point count for a given error bound the way Douglas–Peucker variants
-  do). It aims for visually faithful results, not provable minima.
-- **Tuned for smooth scientific curves.** Heavily noisy data can trip the
-  bend and sign-change detectors into keeping noise spikes; pre-smoothing
-  or a higher `grad_inc` helps.
-- **`log_y` needs positive data.** Log-space handling only activates when
-  every `y > 0`. Curves crossing zero stay in linear space.
-- **No streaming.** The whole curve is loaded and processed in memory; it
-  is not designed for out-of-core or online/streaming use.
+- **Single-valued curves only.** Closed loops, self-intersecting paths,
+  and multi-valued data are not supported; points are sorted by `x`.
+- **Heuristic, not optimal.** It does not minimise point count for a
+  given error bound the way Douglas–Peucker variants do.
+- **Noise.** Heavily noisy data can trip the bend and sign-change
+  detectors into keeping noise spikes; pre-smooth or raise `grad_inc`.
+- **`log_y` needs positive data.** Curves crossing zero stay in linear
+  space.
+- **In-memory only.** The whole curve is processed at once; there is no
+  streaming mode.
 
-## Dependencies
+## Citation
 
-- **numpy** (required)
-- **matplotlib** (optional — plotting and animation)
-  
+If you use `astrosimplify` in your research, please cite the Zenodo
+record:
+
+> Teh, J. W. (2026). *astrosimplify: heuristic downsampling of
+> one-dimensional astrophysical profiles* (v2.0.0). Zenodo.
+> https://doi.org/10.5281/zenodo.20332764
+
+A machine-readable [`CITATION.cff`](CITATION.cff) is included, so the
+"Cite this repository" button on GitHub produces BibTeX and APA entries.
+
 ## License
 
 Released under the [MIT License](LICENSE).
-
-## Testimonials
-
-> *"It's good. It's peer reviewed."*
-
-> *"It's amazing!"* — Karin
-
-> *"It simplifies my life."* — Philipp
