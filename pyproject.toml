@@ -35,6 +35,7 @@ dependencies = ["numpy>=1.20"]
 
 [project.optional-dependencies]
 plot = ["matplotlib>=3.5"]
+test = ["matplotlib>=3.5", "pytest>=7"]
 
 [project.scripts]
 astrosimplify = "astrosimplify:main"
@@ -51,3 +52,6 @@ packages = ["astrosimplify", "astrosimplify.data"]
 [tool.setuptools.package-data]
 astrosimplify = ["*.mplstyle"]
 "astrosimplify.data" = ["*.dat"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

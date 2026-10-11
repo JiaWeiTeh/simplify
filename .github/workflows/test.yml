@@ -32,7 +32,7 @@ jobs:
           astrosimplify --randomSB99 -o sb.csv
           test -s sb.csv
       - name: --metrics on a real input file
-        run: astrosimplify data/bubble_T.dat --metrics
+        run: astrosimplify data/bubble_T.dat --nmin 20 --metrics -o bubble_T_simplified.csv
       - name: Python API round-trip + error bound
         run: |
           python - <<'PY'
@@ -46,3 +46,7 @@ jobs:
           assert m["r_squared"] > 0.95, m["r_squared"]
           print(f"OK: {x.size} -> {xs.size}, R^2 = {m['r_squared']:.4f}")
           PY
+      - name: Install test extras (matplotlib, pytest)
+        run: pip install -e ".[test]"
+      - name: Test suite
+        run: pytest -q
