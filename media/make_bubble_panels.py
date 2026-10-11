@@ -1,6 +1,10 @@
 """Generate a single-column vector PDF of the bubble temperature and
 density profiles, each simplified to exactly n = 40 points.
 
+The bundled profiles are 100-point files, pre-thinned from a denser
+simulation grid, and the legend labels the reference curve with that
+true point count.
+
 Layout: one column, two profile groups stacked vertically (temperature
 on top, density below).  Each group is a tall profile panel over a short
 residual subrow.  All four panels share the radius x-axis.
@@ -10,9 +14,9 @@ log-log axes, no grid, a colourblind-friendly (Wong) palette, a dashed
 reference line at the bubble edge, compact lower-corner legends, and
 physical-unit axis labels on log axes.
 
-The 40 points are the most important ones under the same greedy
-worst-error ranking that ``simplify_diagnostic`` uses, so a length-40
-prefix is the principled "best 40 points" for a connect-the-dots
+The 40 points come from :func:`astrosimplify.simplify_n`, the same
+greedy worst-error ranking that ``simplify_diagnostic`` uses, so they
+are the principled "best 40 points" for a connect-the-dots
 reconstruction.  Run from the repository root:
 
     python media/make_bubble_panels.py
@@ -28,23 +32,17 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from astrosimplify import (  # noqa: E402
-    _auto_log_y, _importance_order, _log_ylim_from_positive, simplify_error,
+    _log_ylim_from_positive, simplify_error, simplify_n,
 )
 
 STYLE_FILE = ROOT / "media" / "trinity.mplstyle"
 
 N_POINTS = 40
-N_ORIG_LABEL = r"$n = 3\times10^4$"
 
 # Colourblind-friendly (Wong) palette, matching the reference figures.
 C_ORIG = "0.6"        # full-resolution curve (faint background)
 C_SIMP = "#d62728"    # the n=40 simplification (the hero)
 C_RESID = "#0072B2"   # residual subrow
-
-# 1 parsec in cm; the density column is stored as log10(number density per
-# pc^3), so subtracting 3*log10(pc/cm) converts it to log10(n / cm^-3).
-PC_CM = 3.0856775814913673e18
-PC3_TO_CM3_SHIFT = -3.0 * np.log10(PC_CM)
 
 PANELS = [
     {
@@ -52,25 +50,14 @@ PANELS = [
         "ylabel": r"$T(r)$ [K]",
         "res_ylabel": r"$|\Delta \log T|$",
         "legend_loc": "lower left",
-        "log_shift": 0.0,
     },
     {
         "file": ROOT / "data" / "bubble_n.dat",
         "ylabel": r"$n(r)$ [cm$^{-3}$]",
         "res_ylabel": r"$|\Delta \log n|$",
         "legend_loc": "upper left",
-        "log_shift": PC3_TO_CM3_SHIFT,
     },
 ]
-
-
-def simplify_n(x, y, n):
-    """Keep exactly the ``n`` most important points (sorted by x)."""
-    use_log = _auto_log_y(y, "auto")
-    y_work = np.log10(y) if use_log else y
-    n_keep = max(2, min(n, x.size))
-    idx = np.sort(_importance_order(x, y_work, n_keep))
-    return x[idx], y[idx], simplify_error(x, y, x[idx], y[idx])
 
 
 def main():
@@ -94,16 +81,19 @@ def main():
 
     for (ax_top, ax_res), panel in zip(pairs, PANELS):
         data = np.loadtxt(panel["file"], comments="#")
-        r, y = data[:, 0], data[:, 1] + panel["log_shift"]
+        r, y = data[:, 0], data[:, 1]          # y is log10 of the quantity
         order = np.argsort(r, kind="stable")
         r, y = r[order], y[order]
 
-        r_s, y_s, m = simplify_n(r, y, N_POINTS)
+        # The bundled profile is already log10, so rank it linearly: the
+        # same ranking simplify_n(r, 10**y) would use in log mode.
+        r_s, y_s = simplify_n(r, y, N_POINTS, log_y=False)
+        m = simplify_error(r, y, r_s, y_s)
         abs_res = np.abs(y - np.interp(r, r_s, y_s))
 
         # --- top: profile (physical units on a log axis) ---
         ax_top.plot(r, 10.0 ** y, "-", color=C_ORIG, lw=2.0, zorder=1,
-                    label=rf"original ({N_ORIG_LABEL})")
+                    label=rf"input ($n = {r.size}$)")
         ax_top.plot(r_s, 10.0 ** y_s, "-", color="k", lw=1.2, zorder=3,
                     marker="o", ms=3.5, markerfacecolor=C_SIMP,
                     markeredgecolor="black", mew=0.6,

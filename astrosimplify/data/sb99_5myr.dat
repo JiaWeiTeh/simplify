@@ -2,6 +2,7 @@
 # Column 1: wavelength [A]
 # Column 2: log10(total luminosity) [erg / s / A]
 # Extracted from the LOG (TOTAL) table; other age columns dropped.
+# Source: Starburst99, Leitherer et al. 1999, ApJS, 123, 3.
      91.0000    37.703610
      94.0000    37.767450
      96.0000    37.813070

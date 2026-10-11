@@ -51,7 +51,8 @@ To work on the source or rerun the figure scripts in `media/`:
 ```bash
 git clone https://github.com/JiaWeiTeh/simplify.git
 cd simplify
-pip install -e ".[plot]"
+pip install -e ".[test]"
+pytest
 ```
 
 Check the install with `astrosimplify --help`.
@@ -76,6 +77,7 @@ Common variations:
 ```python
 x_s, y_s = asimp.simplify(x, y, nmin=200)                       # denser output
 x_s, y_s = asimp.simplify(x, y, max_err=0.1, log_y=False)       # bound the worst-case error
+x_s, y_s = asimp.simplify_n(x, y, 40)                           # exactly the 40 most important points
 asimp.simplify_plot(x, y, x_s, y_s, save_path="comparison.png")  # before/after figure
 ```
 
@@ -107,8 +109,9 @@ y-units otherwise.
 
 <img src="https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_sb99_tight.gif" alt="Starburst99 SED with max_err" width="560">
 
-1221 → **360** points (3.4× compression).  The curve is the Starburst99
-`LOG (TOTAL)` column at 5 Myr (instantaneous burst, Z = Z☉), spanning
+1221 → **359** points (3.4× compression).  The curve is the Starburst99
+([Leitherer et al. 1999, ApJS 123, 3](https://ui.adsabs.harvard.edu/abs/1999ApJS..123....3L)) `LOG (TOTAL)`
+column at 5 Myr (instantaneous burst, Z = Z☉), spanning
 91 Å to 1.6 × 10⁶ Å and ~6 dex in luminosity, with `x = log10(λ/Å)` and
 `y = log10(L_λ)`.  With `max_err = 0.05` points are inserted at the
 worst-error locations until no sample deviates by more than 0.05 dex.
@@ -120,19 +123,21 @@ astrosimplify --randomSB99 --animate sb99.gif --animate-duration 6 --r2-target 0
 
 ### Stellar-wind bubble profiles
 
-Temperature `T(r)` and density `n(r)` inside a stellar-wind bubble: a
-smooth interior with one sharp transition at the contact discontinuity.
+Temperature `T(r)` and density `n(r)` in the hot interior of a
+stellar-wind bubble.  The interior is isobaric, so the density rises
+exactly as the temperature plunges across the conduction front at the
+bubble edge: a smooth profile with one sharp transition.
 
 | temperature `log₁₀ T(r)` | density `log₁₀ n(r)` |
 |:---:|:---:|
 | ![Bubble temperature profile](https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_bubble_T.gif) | ![Bubble density profile](https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_bubble_n.gif) |
 
-The original profiles sit on a **30 000-point** radial grid; fewer than
-**60 points reproduce either curve to R² ≥ 0.999**, a ~500× reduction.
-The bend detector spends its budget on the edge and barely touches the
-smooth interior.  The bundled `data/bubble_T.dat` and `data/bubble_n.dat`
-are a 100-point pre-simplification of the full grid so the demo
-regenerates quickly; see `media/make_bubble_gifs.py`.
+The bundled `data/bubble_T.dat` and `data/bubble_n.dat` hold 100 points
+each, already thinned from a much denser simulation grid.  Even so,
+**12 of the 100 points reproduce either profile to R² ≥ 0.999** in log
+space, because the ranking spends its budget on the edge and barely
+touches the smooth interior.  The GIFs build up to the 40-point set from
+`simplify_n`; `media/make_bubble_gifs.py` regenerates them.
 
 ## Choosing `nmin` and `max_err`
 
@@ -166,7 +171,9 @@ astrosimplify --random --seed 67 --diagnostic --nrels 0.9,0.5,0.25 --plot
 <img src="https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_random_diagnostic.png" alt="Diagnostic grid" width="560">
 
 From Python, `simplify_diagnostic` returns one dict per `nrel` with the
-metrics and the simplified arrays:
+metrics and the simplified arrays.  Once you know the budget you need,
+`simplify_n(x, y, n)` returns exactly that many points from the same
+ranking:
 
 ```python
 from astrosimplify import random_test_curve, simplify_diagnostic
@@ -188,18 +195,19 @@ per line, in any order (it is sorted by `x` internally):
 
 Output goes to `--output/-o` (default `simplified_output.csv`) as a
 comma-delimited file with a `# x,y` header, so simplified files can be
-fed straight back in.
+fed straight back in.  The built-in demos (`--random`, `--randomSB99`)
+only write a file when `-o` is given.
 
 ## Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `nmin` | 100 | Target minimum number of output samples for arc-length sampling. |
+| `nmin` | 100 | Target minimum number of output samples for arc-length sampling. Must be at least 2; inputs with `nmin` or fewer samples are returned unchanged. For an exact count use `simplify_n`. |
 | `grad_inc` | 1.0 | Bend sensitivity (dimensionless). A point is kept when the Menger curvature in normalised coordinates exceeds this value. |
 | `warn_below_r2` | 0.9 | Emit a `UserWarning` if the output R² falls below this. `None` disables the check. |
-| `max_err` | `None` | Maximum allowed vertical (fixed-x) interpolation error. A greedy loop inserts points until no sample deviates by more than this. Units follow `log_y` (dex when on, raw y-units when off), so `log_y` must be set explicitly when `max_err` is used. |
+| `max_err` | `None` | Maximum allowed vertical (fixed-x) interpolation error. A greedy loop, run after every other stage, inserts points until no sample deviates by more than this. Units follow `log_y` (dex when on, raw y-units when off), so `log_y` must be set explicitly when `max_err` is used. |
 | `log_y` | `"auto"` | Run the feature detectors in `log10(y)`. `"auto"` activates when every `y > 0` and `max(y)/min(y) > 100`; pass `True`/`False` to force. The returned arrays always contain the raw `y`. |
-| `dedup_tol` | `1e-6` | Tolerance for collapsing near-duplicate consecutive samples (ODE-solver stagnation). `0` disables. |
+| `dedup_tol` | `1e-6` | Tolerance, as a fraction of the data range, for collapsing near-duplicate samples (ODE-solver stagnation). A sample is dropped only when it is this close in both x and y to the previous kept sample. `0` disables. |
 
 ## How it works
 
@@ -219,19 +227,20 @@ collapsed.  Then:
    y-range are always kept, and the x-axis is split into 20 chunks with
    one feature point promoted per chunk, so every stretch of `x` is
    represented.
-5. **Greedy error bound** (when `max_err` is set).  Repeatedly insert the
+5. **Collinearity prune.** Drop any point lying within 0.1 % of the
+   y-range of the chord between its neighbours.  Endpoints and mandatory
+   points are protected.
+6. **Greedy error bound** (when `max_err` is set).  Repeatedly insert the
    original point with the largest vertical interpolation error until the
-   worst case is below `max_err`.
-6. **Collinearity prune.** Drop any remaining point lying within 0.1 % of
-   the y-range of the chord between its neighbours.  Endpoints, mandatory
-   extrema, and `max_err` insertions are protected.
+   worst case is below `max_err`.  This runs last, so the bound holds for
+   the returned points.
 
 Finally the output R² is compared against `warn_below_r2` and a
 `UserWarning` is emitted if it falls short; the output is not changed.
 
 For multi-decade data (density, temperature, flux) `log_y="auto"`
 switches every detector onto `log10(y)` when the input is strictly
-positive and spans at least two decades.  `simplify_error` and
+positive and spans more than two decades.  `simplify_error` and
 `--metrics` then also report `log_r_squared`, `log_rms_err`, and
 `log_max_dex_err`.  Plot such output with `plt.semilogy` so the
 interpolation between kept points happens in log space, as the sampler
@@ -247,6 +256,9 @@ assumed.
   detectors into keeping noise spikes; pre-smooth or raise `grad_inc`.
 - **`log_y` needs positive data.** Curves crossing zero stay in linear
   space.
+- **Repeated x values.** Two samples at the same `x` with different `y`
+  form a vertical jump that no function of `x` can follow.  `max_err`
+  cannot be met there, and `simplify` warns when that happens.
 - **In-memory only.** The whole curve is processed at once; there is no
   streaming mode.
 
@@ -256,7 +268,7 @@ If you use `astrosimplify` in your research, please cite the Zenodo
 record:
 
 > Teh, J. W. (2026). *astrosimplify: heuristic downsampling of
-> one-dimensional astrophysical profiles* (v2.0.0). Zenodo.
+> one-dimensional astrophysical profiles*. Zenodo.
 > https://doi.org/10.5281/zenodo.20332764
 
 A machine-readable [`CITATION.cff`](CITATION.cff) is included, so the

@@ -24,7 +24,7 @@ from matplotlib.animation import FuncAnimation
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from astrosimplify import _auto_log_y, _importance_order, simplify_error  # noqa: E402
+from astrosimplify import _importance_order  # noqa: E402
 
 STYLE_FILE = ROOT / "media" / "trinity.mplstyle"
 
@@ -32,14 +32,10 @@ STYLE_FILE = ROOT / "media" / "trinity.mplstyle"
 # the static PDF's n = 40 picture.
 N_FINAL = 40
 N_START = 3
-N_ORIG_LABEL = r"$n = 3\times10^4$"
 
 C_ORIG = "0.6"
 C_SIMP = "#d62728"
 C_RESID = "#0072B2"
-
-PC_CM = 3.0856775814913673e18
-PC3_TO_CM3_SHIFT = -3.0 * np.log10(PC_CM)
 
 PANELS = [
     {
@@ -48,7 +44,6 @@ PANELS = [
         "ylabel": r"$T(r)$ [K]",
         "res_ylabel": r"$|\Delta \log T|$",
         "legend_loc": "lower left",
-        "log_shift": 0.0,
     },
     {
         "file": ROOT / "data" / "bubble_n.dat",
@@ -56,15 +51,16 @@ PANELS = [
         "ylabel": r"$n(r)$ [cm$^{-3}$]",
         "res_ylabel": r"$|\Delta \log n|$",
         "legend_loc": "upper left",
-        "log_shift": PC3_TO_CM3_SHIFT,
     },
 ]
 
 
-def _build_steps(r, y):
-    """Pre-compute (idx, abs_res) for n = 3, 4, ..., N_FINAL."""
-    use_log = _auto_log_y(y, "auto")
-    y_work = np.log10(y) if use_log else y
+def _build_steps(r, y_work):
+    """Pre-compute (idx, abs_res) for n = 3, 4, ..., N_FINAL.
+
+    ``y_work`` is the log10 profile as stored in the data file, which is
+    exactly the space the static PDF ranks and measures residuals in.
+    """
     n_cap = min(N_FINAL, r.size)
     order = _importance_order(r, y_work, n_cap)
 
@@ -79,12 +75,12 @@ def _build_steps(r, y):
 
 def _make_gif(panel, *, fps=20, duration=5.0, hold_frac=0.18):
     data = np.loadtxt(panel["file"], comments="#")
-    r, y_log = data[:, 0], data[:, 1] + panel["log_shift"]
+    r, y_log = data[:, 0], data[:, 1]
     order_x = np.argsort(r, kind="stable")
     r, y_log = r[order_x], y_log[order_x]
     y_lin = 10.0 ** y_log
 
-    steps = _build_steps(r, y_lin)
+    steps = _build_steps(r, y_log)
 
     fig = plt.figure(figsize=(4.6, 4.6))
     gs = fig.add_gridspec(
@@ -95,7 +91,7 @@ def _make_gif(panel, *, fps=20, duration=5.0, hold_frac=0.18):
     ax_res = fig.add_subplot(gs[1], sharex=ax_top)
 
     ax_top.plot(r, y_lin, "-", color=C_ORIG, lw=2.0, zorder=1,
-                label=rf"original ({N_ORIG_LABEL})")
+                label=rf"input ($n = {r.size}$)")
     line_simp, = ax_top.plot(
         [], [], "-", color="k", lw=1.2, zorder=3,
         marker="o", ms=3.5, markerfacecolor=C_SIMP,
