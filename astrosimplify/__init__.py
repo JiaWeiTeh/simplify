@@ -12,6 +12,7 @@ plotting and animation helpers.
 Functions
 ---------
 simplify          Core downsampling algorithm.
+simplify_n        Keep exactly the n most important samples.
 simplify_error    Error metrics (RMSE, MAE, R², compression, …).
 simplify_diagnostic  Sweep target sizes; tabulate max_err / R² (+ grid plot).
 simplify_plot     Static before/after comparison plot.
@@ -22,6 +23,7 @@ load_sb99_5myr    Bundled Starburst99 SED at 5 Myr (log λ vs log L_λ).
 main      Command-line interface (reads two-column text files).
 """
 
+import heapq
 from pathlib import Path
 from typing import Tuple, Union, Sequence
 
@@ -31,6 +33,7 @@ __version__ = "2.0.0"
 
 __all__ = [
     "simplify",
+    "simplify_n",
     "simplify_error",
     "simplify_plot",
     "simplify_diagnostic",
@@ -105,6 +108,20 @@ def _prev_next_strict(y: np.ndarray, greater: bool) -> Tuple[np.ndarray, np.ndar
             if stk:
                 prev_s_list[i] = stk[-1]
             stk_append(i)
+    # The pop rule above (``<=`` / ``>=``) makes ``prev_s`` strict but
+    # ``next_s`` only "next greater-or-equal": an equal neighbour, as on
+    # a flat-topped peak, would end the walk early and zero the
+    # prominence.  Follow chains of equal values instead: when
+    # ``y[next[i]] == y[i]``, the next strictly more extreme position of
+    # ``i`` is that of ``next[i]``.  Walking ``i`` downwards guarantees
+    # ``next[next[i]]`` is already resolved.  Only equal-valued pairs
+    # are visited, so this costs nothing on generic float data.
+    nxt = np.asarray(next_s_list, dtype=np.int64)
+    has_next = nxt < n
+    tie = np.zeros(n, dtype=bool)
+    tie[has_next] = y[nxt[has_next]] == y[has_next]
+    for i in np.flatnonzero(tie)[::-1].tolist():
+        next_s_list[i] = next_s_list[next_s_list[i]]
     return (
         np.asarray(prev_s_list, dtype=np.int64),
         np.asarray(next_s_list, dtype=np.int64),
@@ -376,6 +393,102 @@ def _prune_collinear(
     return idx[alive]
 
 
+def _segment_worst(x: np.ndarray, y: np.ndarray, lo: int, hi: int):
+    """
+    Largest linear-interpolation error strictly inside the segment
+    ``(lo, hi)`` and the index where it occurs.
+
+    The interpolant is the chord between samples ``lo`` and ``hi``,
+    evaluated with ``np.interp`` so the values match a global
+    ``np.interp`` through the same knots bit for bit.  Returns
+    ``(0.0, -1)`` when the segment has no interior samples or zero
+    x-width (repeated x values cannot be fitted by a function of x).
+    """
+    if hi - lo < 2 or not x[hi] > x[lo]:
+        return 0.0, -1
+    err = np.abs(
+        y[lo + 1:hi]
+        - np.interp(x[lo + 1:hi], (x[lo], x[hi]), (y[lo], y[hi]))
+    )
+    k = int(np.argmax(err))
+    return float(err[k]), lo + 1 + k
+
+
+def _greedy_refine(
+    x: np.ndarray, y: np.ndarray, idx: np.ndarray, max_err: float,
+) -> np.ndarray:
+    """
+    Insert worst-fitting samples into ``idx`` until no sample deviates
+    from the piecewise-linear interpolant by more than ``max_err``.
+
+    Linear interpolation is local, so inserting a point only changes the
+    error inside the one segment it splits.  A heap of per-segment worst
+    errors therefore finds the global worst sample in O(log m) and each
+    insertion only re-evaluates the two new segments, instead of
+    re-interpolating the whole curve per point.  Samples that share an
+    x value with a different y cannot be fitted and are skipped; the
+    caller checks the final error and warns about them.
+
+    Returns the sorted union of ``idx`` and the inserted indices.
+    """
+    idx = np.unique(np.asarray(idx, dtype=np.int64))
+    heap = []
+    for lo, hi in zip(idx[:-1].tolist(), idx[1:].tolist()):
+        e, k = _segment_worst(x, y, lo, hi)
+        if k >= 0 and e > max_err:
+            heap.append((-e, k, lo, hi))
+    heapq.heapify(heap)
+    inserted = []
+    while heap:
+        _, k, lo, hi = heapq.heappop(heap)
+        inserted.append(k)
+        for a, b in ((lo, k), (k, hi)):
+            e, j = _segment_worst(x, y, a, b)
+            if j >= 0 and e > max_err:
+                heapq.heappush(heap, (-e, j, a, b))
+    if not inserted:
+        return idx
+    return np.unique(np.concatenate([idx, np.asarray(inserted, dtype=np.int64)]))
+
+
+def _dedup_keep_mask(
+    x: np.ndarray, y: np.ndarray, tol_x: float, tol_y: float,
+) -> np.ndarray:
+    """
+    Boolean keep-mask for stagnation collapse.
+
+    A sample is dropped when it lies within ``tol_x`` in x **and**
+    ``tol_y`` in y of the last sample that was kept, so every dropped
+    sample is within tolerance of a retained one and a run of tiny steps
+    cannot add up to a large deleted change.  Endpoints are always kept.
+
+    Only samples whose step from the immediate predecessor is already
+    below tolerance can ever be dropped, so the sequential scan visits
+    just those (none at all on typical data).
+    """
+    n = x.size
+    keep = np.ones(n, dtype=bool)
+    if n <= 2:
+        return keep
+    small = (np.abs(np.diff(x)) < tol_x) & (np.abs(np.diff(y)) < tol_y)
+    cand = np.flatnonzero(small[:-1]) + 1          # never the last sample
+    if cand.size == 0:
+        return keep
+    x_l = x.tolist()
+    y_l = y.tolist()
+    anchor = -1
+    prev = -2
+    for i in cand.tolist():
+        if i != prev + 1:
+            anchor = i - 1          # predecessor was not a candidate: kept
+        if abs(x_l[i] - x_l[anchor]) < tol_x and abs(y_l[i] - y_l[anchor]) < tol_y:
+            keep[i] = False
+        else:
+            anchor = i
+        prev = i
+    return keep
+
+
 def _auto_log_y(y: np.ndarray, log_y) -> bool:
     """
     Resolve the ``log_y`` parameter into a plain boolean.
@@ -601,9 +714,11 @@ def simplify(
     nmin : int, optional
         Target *minimum* number of output samples.  Acts as the number
         of bins for the arc-length sampler; the final count may differ
-        after curvature / sign-change / coverage merging, the optional
-        ``max_err`` insertions, and the collinearity prune.  Clamped to
-        >= 100.  Default is 100.
+        after curvature / sign-change / coverage merging, the
+        collinearity prune, and the optional ``max_err`` insertions.
+        Must be at least 2.  Inputs with ``nmin`` or fewer samples are
+        returned unchanged.  Use :func:`simplify_n` to keep an exact
+        number of points.  Default is 100.
     grad_inc : float, optional
         Bend-sensitivity threshold for Menger curvature κ in NORMALISED
         ``(x, y)`` coordinates so it is scale-invariant — the same value
@@ -625,7 +740,11 @@ def simplify(
         simplified curve is queried as a function of x).  When set, a
         greedy loop finds the worst-fitting original point and inserts
         it into the retained set, repeating until every sample agrees
-        within this value.  **Units follow ``log_y``:** raw y-units when
+        within this value.  The bound is enforced after every other
+        stage, so it holds for the returned points.  The one exception
+        is a vertical jump stored as two samples with the same x, which
+        no function of x can follow; a ``UserWarning`` reports it.
+        **Units follow ``log_y``:** raw y-units when
         ``log_y=False``, or dex (log10 units) when ``log_y=True`` — so
         ``0.1`` means "within 0.1 of your y-values" in linear mode but
         "within 0.1 dex (≈ 26 %)" in log mode.  Because the meaning is
@@ -650,11 +769,13 @@ def simplify(
         used.
     dedup_tol : float, optional
         Stagnation tolerance for collapsing near-duplicate consecutive
-        samples (a common ODE-solver artefact).  Two consecutive points
-        are treated as redundant when both ``|Δx| < dedup_tol * (x.max
-        - x.min)`` and ``|Δy| < dedup_tol * (y.max - y.min)``; the
-        second of each such pair is dropped before any feature
-        detection runs.  Default ``1e-6`` — far below any meaningful
+        samples (a common ODE-solver artefact).  A sample is treated as
+        redundant when both ``|Δx| < dedup_tol * (x.max - x.min)`` and
+        ``|Δy| < dedup_tol * (y.max - y.min)``, measured from the last
+        sample that was kept, and is dropped before any feature
+        detection runs.  Every dropped sample therefore lies within
+        that tolerance of a kept one.  Default ``1e-6`` — far below any
+        meaningful
         feature scale.  A ``UserWarning`` reports how many points were
         collapsed whenever this fires.  Set to ``0`` to disable, or to a
         smaller value to collapse fewer points.
@@ -676,7 +797,7 @@ def simplify(
     **1. Basic usage with numpy arrays:**
 
     >>> import numpy as np
-    >>> from simplify import simplify
+    >>> from astrosimplify import simplify
     >>> x = np.linspace(0, 10, 5000)
     >>> y = np.sin(x) + 0.5 * np.sin(5 * x)
     >>> x_s, y_s = simplify(x, y, nmin=100)
@@ -755,6 +876,16 @@ def simplify(
         )
 
     # --- Input validation ---
+    if int(nmin) != nmin or nmin < 2:
+        raise ValueError(
+            f"simplify(): nmin must be an integer >= 2 (the two endpoints "
+            f"are always kept); got {nmin!r}."
+        )
+    nmin = int(nmin)
+    if max_err is not None and not max_err >= 0:
+        raise ValueError(
+            f"simplify(): max_err must be a non-negative number; got {max_err!r}."
+        )
     x = np.asarray(x_arr, dtype=float)
     y_raw = np.asarray(y_arr, dtype=float)
 
@@ -794,50 +925,39 @@ def simplify(
     # --- ODE-solver stagnation collapse ---
     # ODE outputs frequently emit runs of nearly-identical (x, y)
     # samples around stiff regions; left in place they swamp every
-    # downstream detector with redundant points.  Drop the trailing
-    # member of every consecutive pair where both Δx and Δy are
-    # below ``dedup_tol`` × the global range.  Endpoints stay pinned
-    # so the output still bounds the input.
+    # downstream detector with redundant points.  A sample is dropped
+    # when both its |Δx| and |Δy| from the last *kept* sample are below
+    # ``dedup_tol`` × the global range.  Comparing against the last kept
+    # sample (not the immediate predecessor) matters: otherwise a long
+    # run of individually tiny steps is deleted wholesale even when it
+    # adds up to a large change, which can erase a whole peak on a
+    # dense grid.  Endpoints stay pinned so the output still bounds the
+    # input.
     if dedup_tol > 0 and x.size > 2:
-        x_rng_full = float(np.ptp(x)) or 1.0
-        y_rng_full = float(np.ptp(y)) or 1.0
-        stagnant = (
-            (np.abs(np.diff(x)) < dedup_tol * x_rng_full) &
-            (np.abs(np.diff(y)) < dedup_tol * y_rng_full)
+        keep = _dedup_keep_mask(
+            x, y,
+            dedup_tol * (float(np.ptp(x)) or 1.0),
+            dedup_tol * (float(np.ptp(y)) or 1.0),
         )
-        if np.any(stagnant):
-            keep = np.ones(x.size, dtype=bool)
-            keep[1:][stagnant] = False
-            keep[0] = True
-            keep[-1] = True
-            n_removed = int(keep.size - int(keep.sum()))
+        n_removed = int(keep.size - int(keep.sum()))
+        if n_removed:
             x = x[keep]
             y = y[keep]
             y_raw = y_raw[keep]
             warnings.warn(
                 f"dedup: collapsed {n_removed} near-duplicate point(s) "
-                f"(consecutive |Δx| and |Δy| both < dedup_tol={dedup_tol:g} "
-                f"× data range) before simplifying; {x.size} unique point(s) "
-                f"remain. Pass dedup_tol=0 to disable this, or a smaller "
-                f"value to collapse fewer points.",
+                f"(each within dedup_tol={dedup_tol:g} × data range of the "
+                f"previous kept point in both x and y) before simplifying; "
+                f"{x.size} point(s) remain. Pass dedup_tol=0 to disable "
+                f"this, or a smaller value to collapse fewer points.",
                 UserWarning,
                 stacklevel=2,
             )
 
-    # If the array is already short enough, return as-is.
-    if nmin >= x.size:
+    # If the array is already short enough, return as-is.  Fewer than
+    # three samples cannot be simplified at all (both are endpoints).
+    if nmin >= x.size or x.size < 3:
         return x, y_raw
-    # Enforce a floor of 100 samples so the output is always useful.
-    if int(nmin) < 100:
-        warnings.warn(
-            f"simplify(): requested nmin={int(nmin)} is below the "
-            f"100-sample floor and has been raised to 100. The output "
-            f"cannot be reduced below 100 points; pass nmin>=100 to set "
-            f"the target explicitly.",
-            UserWarning,
-            stacklevel=2,
-        )
-    nmin = max(int(nmin), 100)
 
     # =====================================================================
     # Strategy 1: Scale-invariant bend detection (Menger curvature)
@@ -928,9 +1048,17 @@ def simplify(
 
     # Bin-boundary crossings of the cumulative arc length give one
     # sample per ``total_arc / nmin`` of length traversed in [0, 1]².
+    # ``s[i]`` is the arc length at sample i (``arc_cum`` is one shorter
+    # and ends at i + 1).  A boundary crossed on segment (i-1, i) keeps
+    # sample i, the first sample of the new bin.  A segment spanning
+    # more than one whole bin is a jump, so both of its ends are kept.
     maxdist = total_arc / nmin
-    bins = (arc_cum / maxdist).astype(int)
-    idx_dist = np.where(bins[:-1] != bins[1:])[0]
+    s = np.concatenate(([0.0], arc_cum))
+    bins_crossed = np.diff(np.floor(s / maxdist).astype(np.int64))
+    idx_dist = np.union1d(
+        np.flatnonzero(bins_crossed) + 1,
+        np.flatnonzero(bins_crossed >= 2),
+    )
 
     # =====================================================================
     # Merge feature pool: endpoints ∪ bend ∪ extrema ∪ arc samples
@@ -952,36 +1080,31 @@ def simplify(
     mandatory = np.unique(np.concatenate([prominent_idx, coverage_idx]))
 
     # =====================================================================
-    # Strategy 5: greedy max-error reduction (optional)
-    # =====================================================================
-    maxerr_inserted = np.array([], dtype=int)
-    if max_err is not None and merged.size > 1:
-        pre_merged = merged.copy()
-        in_merged = np.zeros(x.size, dtype=bool)
-        in_merged[merged] = True
-        while True:
-            y_interp = np.interp(x, x[merged], y[merged])
-            abs_res = np.abs(y - y_interp)
-            worst_idx = int(np.argmax(abs_res))
-            if abs_res[worst_idx] <= max_err:
-                break
-            if in_merged[worst_idx]:
-                break
-            in_merged[worst_idx] = True
-            merged = np.sort(np.append(merged, worst_idx))
-        maxerr_inserted = np.setdiff1d(merged, pre_merged)
-
-    # =====================================================================
-    # Strategy 6: collinearity prune
+    # Strategy 5: collinearity prune
     # =====================================================================
     if merged.size > 2 and y_range > 0:
-        protected = (
-            np.unique(np.concatenate([mandatory, maxerr_inserted]))
-            if maxerr_inserted.size > 0 else mandatory
-        )
         merged = _prune_collinear(
-            merged, x, y, tol=1e-3 * y_range, protected=protected,
+            merged, x, y, tol=1e-3 * y_range, protected=mandatory,
         )
+
+    # =====================================================================
+    # Strategy 6: greedy max-error bound (optional)
+    # =====================================================================
+    # Runs last so nothing removes the points the bound relies on.
+    if max_err is not None and merged.size > 1:
+        merged = _greedy_refine(x, y, merged, max_err)
+        worst = float(np.max(np.abs(y - np.interp(x, x[merged], y[merged]))))
+        if worst > max_err * (1.0 + 1e-9):
+            n_dup = int(np.count_nonzero((np.diff(x) == 0) & (np.diff(y) != 0)))
+            warnings.warn(
+                f"simplify: max_err={max_err:g} could not be met everywhere "
+                f"(worst residual {worst:.3g}). {n_dup} sample(s) repeat "
+                f"the previous x with a different y, i.e. a vertical jump "
+                f"that no function of x can follow. Separate the repeated "
+                f"x values slightly to fit them.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     # --- Soft R² check ---
     # Informational only: warn when the simplification fell short of
@@ -1007,6 +1130,14 @@ def simplify(
     # original values back so simplification is transparent on the
     # input's native scale.
     return x[merged], y_raw[merged]
+
+
+def _r_squared(ss_res: float, ss_tot: float) -> float:
+    """R² = 1 − SS_res / SS_tot; for a constant original (SS_tot = 0) it
+    is 1.0 only when the reconstruction is exact, otherwise ``nan``."""
+    if ss_tot > 0:
+        return 1.0 - ss_res / ss_tot
+    return 1.0 if ss_res == 0 else float("nan")
 
 
 def simplify_error(
@@ -1044,12 +1175,18 @@ def simplify_error(
             more than MAE.
         - ``"max_rel_err"`` : float
             Maximum relative error, ``max(|residual| / |y_orig|)``,
-            skipping points where ``|y_orig| < 1e-30``.  Useful when
-            the signal spans many orders of magnitude.
+            skipping points where ``|y_orig|`` is below ``1e-12`` times
+            the largest ``|y_orig|`` (a cutoff relative to the data, so
+            the result does not depend on units).  ``nan`` when no point
+            qualifies.  Not meaningful for curves that cross zero, where
+            points near zero dominate; use the log metrics for strictly
+            positive multi-decade data instead.
         - ``"r_squared"`` : float
             Coefficient of determination (R^2).  1.0 = perfect
             reconstruction; values close to 1.0 indicate the simplified
-            curve captures nearly all variance of the original.
+            curve captures nearly all variance of the original.  For a
+            constant original, R² is undefined: it is reported as 1.0
+            when the reconstruction is exact and ``nan`` otherwise.
         - ``"compression"`` : float
             Compression ratio, ``len(x_orig) / len(x_simp)``.  Higher
             means more aggressive downsampling.
@@ -1087,6 +1224,10 @@ def simplify_error(
     y_o = np.asarray(y_orig, dtype=float)
     x_s = np.asarray(x_simp, dtype=float)
     y_s = np.asarray(y_simp, dtype=float)
+    # ``np.interp`` silently returns garbage for unsorted knots.
+    if x_s.size > 1 and not np.all(np.diff(x_s) >= 0):
+        order = np.argsort(x_s, kind="stable")
+        x_s, y_s = x_s[order], y_s[order]
 
     # Linear reconstruction: the naive "connect the dots" interpretation
     # of the simplified points.  All linear-space metrics below are
@@ -1099,18 +1240,20 @@ def simplify_error(
     mean_abs = float(np.mean(np.abs(residual)))
     rms = float(np.sqrt(np.mean(residual ** 2)))
 
-    # Relative error (skip near-zero original values to avoid division blow-up).
-    eps = 1e-30
-    mask = np.abs(y_o) > eps
-    if np.any(mask):
+    # Relative error.  Skip near-zero original values to avoid division
+    # blow-up, with a cutoff relative to the data's scale so the metric
+    # does not depend on the units y happens to be expressed in.
+    y_scale_abs = float(np.max(np.abs(y_o))) if y_o.size else 0.0
+    mask = np.abs(y_o) > 1e-12 * y_scale_abs
+    if y_scale_abs > 0 and np.any(mask):
         max_rel = float(np.max(np.abs(residual[mask]) / np.abs(y_o[mask])))
     else:
-        max_rel = 0.0
+        max_rel = float("nan")
 
     # R² (coefficient of determination) in linear space.
-    ss_res = np.sum(residual ** 2)
-    ss_tot = np.sum((y_o - np.mean(y_o)) ** 2)
-    r_squared = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else 1.0
+    r_squared = _r_squared(
+        float(np.sum(residual ** 2)), float(np.sum((y_o - np.mean(y_o)) ** 2))
+    )
 
     metrics = {
         "max_abs_err": max_abs,
@@ -1139,10 +1282,9 @@ def simplify_error(
         log_y_o = np.log10(y_o)
         log_interp = np.interp(x_o, x_s, np.log10(y_s))
         log_res = log_y_o - log_interp
-        ss_res_log = float(np.sum(log_res ** 2))
-        ss_tot_log = float(np.sum((log_y_o - np.mean(log_y_o)) ** 2))
-        metrics["log_r_squared"] = (
-            1.0 - ss_res_log / ss_tot_log if ss_tot_log > 0 else 1.0
+        metrics["log_r_squared"] = _r_squared(
+            float(np.sum(log_res ** 2)),
+            float(np.sum((log_y_o - np.mean(log_y_o)) ** 2)),
         )
         metrics["log_rms_err"] = float(np.sqrt(np.mean(log_res ** 2)))
         metrics["log_max_dex_err"] = float(np.max(np.abs(log_res)))
@@ -1202,6 +1344,11 @@ def simplify_plot(
         y_o = np.asarray(y_orig, dtype=float)
         x_s = np.asarray(x_simp, dtype=float)
         y_s = np.asarray(y_simp, dtype=float)
+        # Draw (and interpolate) both curves left to right.
+        o = np.argsort(x_o, kind="stable")
+        x_o, y_o = x_o[o], y_o[o]
+        o = np.argsort(x_s, kind="stable")
+        x_s, y_s = x_s[o], y_s[o]
 
         # Compute metrics and residual.
         metrics = simplify_error(x_o, y_o, x_s, y_s)
@@ -1295,19 +1442,27 @@ def _importance_order(
             in_set[seed] = True
             order.append(seed)
 
-    # Each pass rebuilds the interpolant from the current set and adds the
-    # single worst-error sample.  ``np.flatnonzero`` returns the kept
-    # indices already sorted, so the interpolation x-grid stays monotone.
-    while len(order) < n_max:
-        sel = np.flatnonzero(in_set)
-        y_interp = np.interp(x, x[sel], y_work[sel])
-        err = np.abs(y_work - y_interp)
-        err[in_set] = -1.0
-        worst = int(np.argmax(err))
-        if err[worst] <= 0.0:
-            break                       # remaining points add no information
+    # Inserting a point only changes the interpolant inside the segment
+    # it splits, so a heap of per-segment worst errors yields the global
+    # worst sample without re-interpolating the whole curve each time:
+    # O(n log n) for typical curves instead of O(n · n_max).  Ties break
+    # towards the lower index, exactly like ``np.argmax`` over the full
+    # error array, so the ranking is unchanged.
+    heap = []
+
+    def _push(lo, hi):
+        e, k = _segment_worst(x, y_work, lo, hi)
+        if k >= 0 and e > 0.0:
+            heapq.heappush(heap, (-e, k, lo, hi))
+
+    if len(order) == 2:
+        _push(0, n - 1)
+    while len(order) < n_max and heap:
+        _, worst, lo, hi = heapq.heappop(heap)
         in_set[worst] = True
         order.append(worst)
+        _push(lo, worst)
+        _push(worst, hi)
 
     # If the greedy loop stopped early (curve already reproduced exactly),
     # pad with the leftover indices so the requested count is still met.
@@ -1315,6 +1470,73 @@ def _importance_order(
         order.extend(np.flatnonzero(~in_set)[: n_max - len(order)].tolist())
 
     return np.asarray(order, dtype=np.int64)
+
+
+def simplify_n(
+    x_arr: Union[np.ndarray, Sequence[float]],
+    y_arr: Union[np.ndarray, Sequence[float]],
+    n: int,
+    log_y: Union[bool, str] = "auto",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Keep exactly the ``n`` most important samples of a curve.
+
+    Points are ranked by greedy worst-error refinement: start from the
+    two endpoints and repeatedly add the sample with the largest
+    linear-interpolation error.  The first ``n`` of that ranking are the
+    ``n`` points a connect-the-dots reconstruction needs most.  This is
+    the ranking :func:`simplify_diagnostic` tabulates, so its table
+    tells you which ``n`` gives the accuracy you need.
+
+    Unlike :func:`simplify`, which picks its own output size from the
+    curve's features, this returns a fixed budget.
+
+    Parameters
+    ----------
+    x_arr, y_arr : array-like
+        The curve.  Sorted by x internally.
+    n : int
+        Number of points to keep, at least 2.  Inputs with ``n`` or
+        fewer samples are returned unchanged (sorted by x).
+    log_y : bool or "auto", optional
+        Rank errors in ``log10(y)`` instead of ``y``.  ``"auto"``
+        (default) switches to log when every ``y > 0`` and
+        ``max(y) / min(y) > 100``, as in :func:`simplify`.
+
+    Returns
+    -------
+    x_out, y_out : np.ndarray
+        The selected samples, sorted by x, with the caller's original
+        ``y`` values.
+
+    Examples
+    --------
+    >>> x = np.linspace(0, 10, 10000)
+    >>> y = np.sin(x) + 0.5 * np.sin(5 * x)
+    >>> x_s, y_s = simplify_n(x, y, 40)
+    >>> x_s.size
+    40
+    """
+    if int(n) != n or n < 2:
+        raise ValueError(f"simplify_n(): n must be an integer >= 2; got {n!r}.")
+    n = int(n)
+    x = np.asarray(x_arr, dtype=float)
+    y = np.asarray(y_arr, dtype=float)
+    if x.size != y.size:
+        raise ValueError(
+            f"simplify_n(): x and y must have the same length. "
+            f"Got {x.size} and {y.size}"
+        )
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        raise ValueError("simplify_n(): x and y must contain only finite values.")
+    if x.size > 1 and not np.all(np.diff(x) >= 0):
+        order = np.argsort(x, kind="stable")
+        x, y = x[order], y[order]
+    if x.size <= n:
+        return x, y
+    y_work = np.log10(y) if _auto_log_y(y, log_y) else y
+    idx = np.sort(_importance_order(x, y_work, n))
+    return x[idx], y[idx]
 
 
 def simplify_diagnostic(
@@ -1520,6 +1742,9 @@ def simplify_animate(
     log_y: Union[bool, str] = "auto",
     xlabel: str = r"$x$",
     ylabel: str = r"$y$",
+    nmin: int = 100,
+    grad_inc: float = 1.0,
+    dedup_tol: float = 1e-6,
 ) -> None:
     """
     Create an animated GIF showing progressive curve simplification.
@@ -1582,6 +1807,10 @@ def simplify_animate(
         ``r"$x$"``.
     ylabel : str, optional
         Y-axis label for the curve panel.  Default: ``r"$y$"``.
+    nmin, grad_inc, dedup_tol : optional
+        Forwarded to :func:`simplify`, so the final frame is the same
+        point set ``simplify`` returns for these settings.  Defaults
+        match :func:`simplify`.
 
     Examples
     --------
@@ -1590,12 +1819,46 @@ def simplify_animate(
     >>> simplify_animate(x, y, "demo.gif", duration=6.0)
     """
     import matplotlib.pyplot as plt
-    from matplotlib.animation import FuncAnimation
 
-    plt.style.use(str(_STYLE_FILE))
+    # A style *context* (not plt.style.use) so the caller's rcParams are
+    # restored afterwards, even if rendering raises.
+    with plt.style.context(str(_STYLE_FILE)):
+        _simplify_animate_impl(
+            x_orig, y_orig, save_path=save_path, fps=fps,
+            duration=duration, title=title, n_steps=n_steps,
+            r2_target=r2_target, max_err=max_err, log_y=log_y,
+            xlabel=xlabel, ylabel=ylabel, nmin=nmin, grad_inc=grad_inc,
+            dedup_tol=dedup_tol,
+        )
+
+
+def _simplify_animate_impl(
+    x_orig: Union[np.ndarray, Sequence[float]],
+    y_orig: Union[np.ndarray, Sequence[float]],
+    save_path: str = "simplify.gif",
+    fps: int = 30,
+    duration: float = 6.0,
+    title: str = "Curve simplification",
+    n_steps: int = 30,
+    r2_target: float = 0.9,
+    max_err: Union[float, None] = None,
+    log_y: Union[bool, str] = "auto",
+    xlabel: str = r"$x$",
+    ylabel: str = r"$y$",
+    nmin: int = 100,
+    grad_inc: float = 1.0,
+    dedup_tol: float = 1e-6,
+) -> None:
+    """Body of :func:`simplify_animate`; runs inside its style context."""
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation
 
     x_o = np.asarray(x_orig, dtype=float)
     y_o = np.asarray(y_orig, dtype=float)
+    # Everything below (searchsorted, coverage chunks, interpolation)
+    # assumes x is sorted.
+    order = np.argsort(x_o, kind="stable")
+    x_o, y_o = x_o[order], y_o[order]
     n_orig = x_o.size
 
     # --- Precompute simplification at increasing point counts ---
@@ -1607,7 +1870,8 @@ def simplify_animate(
     # the greedy insertions then enter the frame sweep in bisection
     # order with every other point.
     x_full, y_full = simplify(
-        x_o, y_o, warn_below_r2=None, max_err=max_err, log_y=log_y,
+        x_o, y_o, nmin=nmin, grad_inc=grad_inc, warn_below_r2=None,
+        max_err=max_err, log_y=log_y, dedup_tol=dedup_tol,
     )
     n_full = x_full.size
 
@@ -1794,6 +2058,11 @@ def simplify_animate(
     ax_err.set_ylim(rms_floor, rms_ceil)
     ax_err.set_xscale("log")
     ax_err.set_yscale("log")
+    # Newer matplotlib labels minor ticks on log axes spanning about a
+    # decade, and those labels overlap at this panel width.  Keep only
+    # the decade labels.
+    from matplotlib.ticker import NullFormatter
+    ax_err.xaxis.set_minor_formatter(NullFormatter())
     ax_err.set_xlabel(r"Number of points $n$")
     ax_err.set_ylabel(r"RMSE")
 
@@ -1882,9 +2151,6 @@ def simplify_animate(
         writer = "pillow"
     anim.save(save_path, writer=writer, fps=fps, dpi=120)
     plt.close(fig)
-
-    # Restore default rcParams.
-    plt.rcParams.update(plt.rcParamsDefault)
 
     print(f"Animation saved to '{save_path}' ({n_frames} frames, {duration:.1f}s).")
 
@@ -2038,6 +2304,10 @@ def load_sb99_5myr() -> Tuple[np.ndarray, np.ndarray]:
         ``log10(L_λ [erg / s / Å])`` at 5 Myr after an instantaneous
         burst (Z = Z_☉, Kroupa IMF, default Starburst99 tracks).
 
+    References
+    ----------
+    Leitherer, C., et al. 1999, ApJS, 123, 3 (Starburst99).
+
     Examples
     --------
     >>> x, y = load_sb99_5myr()
@@ -2052,6 +2322,21 @@ def load_sb99_5myr() -> Tuple[np.ndarray, np.ndarray]:
 # =============================================================================
 # CLI entry point
 # =============================================================================
+def _cli_nmin(text: str) -> int:
+    """argparse type for --nmin: an integer of at least 2."""
+    import argparse
+
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {text!r}")
+    if value < 2:
+        raise argparse.ArgumentTypeError(
+            f"must be at least 2 (the two endpoints are always kept); got {value}"
+        )
+    return value
+
+
 def main():
     """
     Command-line interface for the simplify curve downsampling function.
@@ -2078,7 +2363,9 @@ def main():
     Optional arguments
     ------------------
     -o, --output : str
-        Path to the output file.  Default: ``simplified_output.csv``.
+        Path to the output file.  Default: ``simplified_output.csv`` when
+        an input file is given; the built-in demos write nothing unless
+        ``-o`` is passed.
     --nmin : int
         Minimum number of output samples (default: 100).
     --grad-inc : float
@@ -2174,12 +2461,14 @@ def main():
     )
     parser.add_argument(
         "-o", "--output",
-        default="simplified_output.csv",
-        help="Path to output file (default: simplified_output.csv).",
+        default=None,
+        help="Path to output file.  Default: simplified_output.csv when "
+             "an input file is given.  The built-in demos (--random, "
+             "--randomSB99) only write a file when -o is passed.",
     )
     parser.add_argument(
         "--nmin",
-        type=int,
+        type=_cli_nmin,
         default=100,
         help="Minimum number of output samples (default: 100).",
     )
@@ -2349,9 +2638,10 @@ def main():
         # Try comma-delimited first, fall back to whitespace.
         try:
             try:
-                data = np.loadtxt(args.infile, delimiter=",", comments="#")
+                data = np.loadtxt(args.infile, delimiter=",", comments="#",
+                                  ndmin=2)
             except ValueError:
-                data = np.loadtxt(args.infile, comments="#")
+                data = np.loadtxt(args.infile, comments="#", ndmin=2)
         except (FileNotFoundError, OSError) as exc:
             raise SystemExit(f"Error: could not open '{args.infile}': {exc}")
         except ValueError as exc:
@@ -2361,10 +2651,11 @@ def main():
                 f"'#' comments): {exc}"
             )
 
-        if data.ndim != 2 or data.shape[1] < 2:
+        if data.shape[1] != 2 or data.shape[0] == 0:
             raise SystemExit(
-                f"Error: expected at least 2 columns in '{args.infile}', "
-                f"got shape {data.shape}."
+                f"Error: expected exactly 2 columns (x y) in "
+                f"'{args.infile}', got {data.shape[1]} column(s) in "
+                f"{data.shape[0]} row(s)."
             )
         x, y = data[:, 0], data[:, 1]
         source_label = f"'{args.infile}'"
@@ -2372,6 +2663,11 @@ def main():
         parser.error(
             "either provide an input file, use --random, or use --randomSB99."
         )
+
+    # The plot and animation helpers draw and interpolate in input order,
+    # so sort once here; the README promises input may be in any order.
+    order = np.argsort(x, kind="stable")
+    x, y = x[order], y[order]
 
     log_y_arg = {"auto": "auto", "on": True, "off": False}[args.log_y]
 
@@ -2419,17 +2715,30 @@ def main():
     )
 
     # --- Write output ---
-    np.savetxt(
-        args.output,
-        np.column_stack([x_out, y_out]),
-        delimiter=",",
-        header="x,y",
-        comments="# ",
-    )
-    print(
-        f"Simplified {x.size} points -> {x_out.size} points.  "
-        f"Written to '{args.output}'."
-    )
+    # File mode writes to simplified_output.csv by default; the built-in
+    # demos only write when -o is given, so trying them never overwrites
+    # a file in the current directory.
+    output = args.output
+    demo = args.random or args.randomSB99
+    if output is None and args.infile is not None and not demo:
+        output = "simplified_output.csv"
+    if output is not None:
+        np.savetxt(
+            output,
+            np.column_stack([x_out, y_out]),
+            delimiter=",",
+            header="x,y",
+            comments="# ",
+        )
+        print(
+            f"Simplified {x.size} points -> {x_out.size} points.  "
+            f"Written to '{output}'."
+        )
+    else:
+        print(
+            f"Simplified {x.size} points -> {x_out.size} points.  "
+            f"(No file written; pass -o PATH to save.)"
+        )
 
     # --- Optional: print error metrics ---
     if args.metrics or args.plot or args.plot_save:
@@ -2472,6 +2781,9 @@ def main():
             r2_target=args.r2_target,
             max_err=args.max_err,
             log_y=log_y_arg,
+            nmin=args.nmin,
+            grad_inc=args.grad_inc,
+            dedup_tol=args.dedup_tol,
             **sb99_labels,
         )
 
@@ -2518,10 +2830,10 @@ if __name__ == "__main__":
         print()
         print("  To use in your own script:")
         print()
-        print("    from simplify import simplify")
-        print("    from simplify import simplify_error")
-        print("    from simplify import simplify_plot")
-        print("    from simplify import simplify_animate")
+        print("    from astrosimplify import simplify")
+        print("    from astrosimplify import simplify_error")
+        print("    from astrosimplify import simplify_plot")
+        print("    from astrosimplify import simplify_animate")
         print()
         print("    x_s, y_s = simplify(x, y, nmin=100)")
         print("    metrics  = simplify_error(x, y, x_s, y_s)")
