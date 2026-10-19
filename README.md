@@ -139,6 +139,29 @@ space, because the ranking spends its budget on the edge and barely
 touches the smooth interior.  The GIFs build up to the 40-point set from
 `simplify_n`; `media/make_bubble_gifs.py` regenerates them.
 
+## Curves in 2-D and 3-D
+
+`simplify_path` handles curves that loop or double back, such as orbits,
+trajectories and HR-diagram tracks.  All coordinates share one set of
+kept samples, and a sample's error is its distance from the simplified
+path at the same time, or at the same arc length by default.
+
+| in the disk plane | in 3-D |
+|:---:|:---:|
+| ![Disk orbit simplified in the plane](https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_path_2d.gif) | ![Disk orbit simplified in 3-D](https://raw.githubusercontent.com/JiaWeiTeh/simplify/main/media/demo_path_3d.gif) |
+
+A star's orbit in a galactic disk from the epicycle approximation:
+20 000 samples become 481 points in the plane and 508 in 3-D, each
+within 10⁻³ guiding radii of the true position at the same time.
+
+```python
+idx = asimp.simplify_path(points, max_err=1e-3, t=t)    # or n=200; returns indices
+asimp.simplify_path_animate(points, "orbit.gif", max_err=1e-3, t=t)
+```
+
+`points` has one row per sample and one column per coordinate.
+`media/make_path_gifs.py` regenerates the GIFs.
+
 ## Choosing `nmin` and `max_err`
 
 `--diagnostic` sweeps several relative output sizes
@@ -248,8 +271,9 @@ assumed.
 
 ## Limitations
 
-- **Single-valued curves only.** Closed loops, self-intersecting paths,
-  and multi-valued data are not supported; points are sorted by `x`.
+- **Single-valued curves in `simplify`.** It sorts points by `x`, so use
+  `simplify_path` for loops, self-intersecting paths, and multi-valued
+  data.
 - **Heuristic, not optimal.** It does not minimise point count for a
   given error bound the way Douglas–Peucker variants do.
 - **Noise.** Heavily noisy data can trip the bend and sign-change

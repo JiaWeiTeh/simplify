@@ -13,6 +13,8 @@ Functions
 ---------
 simplify          Core downsampling algorithm.
 simplify_n        Keep exactly the n most important samples.
+simplify_path     Simplify a curve through 2-D or 3-D space.
+simplify_path_animate  Animated GIF of a 2-D or 3-D path simplification.
 simplify_error    Error metrics (RMSE, MAE, R², compression, …).
 simplify_diagnostic  Sweep target sizes; tabulate max_err / R² (+ grid plot).
 simplify_plot     Static before/after comparison plot.
@@ -34,6 +36,8 @@ __version__ = "2.0.0"
 __all__ = [
     "simplify",
     "simplify_n",
+    "simplify_path",
+    "simplify_path_animate",
     "simplify_error",
     "simplify_plot",
     "simplify_diagnostic",
@@ -400,16 +404,24 @@ def _segment_worst(x: np.ndarray, y: np.ndarray, lo: int, hi: int):
 
     The interpolant is the chord between samples ``lo`` and ``hi``,
     evaluated with ``np.interp`` so the values match a global
-    ``np.interp`` through the same knots bit for bit.  Returns
+    ``np.interp`` through the same knots bit for bit.  For a 2-D ``y``
+    (one row per sample, one column per coordinate) the error is the
+    Euclidean distance to the chord point at the same ``x``.  Returns
     ``(0.0, -1)`` when the segment has no interior samples or zero
     x-width (repeated x values cannot be fitted by a function of x).
     """
     if hi - lo < 2 or not x[hi] > x[lo]:
         return 0.0, -1
-    err = np.abs(
-        y[lo + 1:hi]
-        - np.interp(x[lo + 1:hi], (x[lo], x[hi]), (y[lo], y[hi]))
-    )
+    if y.ndim == 1:
+        err = np.abs(
+            y[lo + 1:hi]
+            - np.interp(x[lo + 1:hi], (x[lo], x[hi]), (y[lo], y[hi]))
+        )
+    else:
+        w = (x[lo + 1:hi] - x[lo]) / (x[hi] - x[lo])
+        err = np.linalg.norm(
+            y[lo + 1:hi] - (y[lo] + w[:, None] * (y[hi] - y[lo])), axis=1
+        )
     k = int(np.argmax(err))
     return float(err[k]), lo + 1 + k
 
@@ -1539,6 +1551,86 @@ def simplify_n(
     return x[idx], y[idx]
 
 
+def _path_inputs(points, t):
+    """Validate a path (one row per sample) and its parameter ``t``.
+
+    ``t`` defaults to the cumulative arc length along the path."""
+    P = np.asarray(points, dtype=float)
+    if P.ndim != 2 or P.shape[0] == 0:
+        raise ValueError(
+            f"points must be a 2-D array with one row per sample and one "
+            f"column per coordinate; got shape {P.shape}."
+        )
+    if not np.all(np.isfinite(P)):
+        raise ValueError("points must contain only finite values.")
+    if t is None:
+        steps = np.linalg.norm(np.diff(P, axis=0), axis=1)
+        return P, np.concatenate(([0.0], np.cumsum(steps)))
+    t = np.asarray(t, dtype=float)
+    if t.shape != (P.shape[0],) or not np.all(np.isfinite(t)):
+        raise ValueError("t must be a finite 1-D array with one value per point.")
+    if np.any(np.diff(t) < 0):
+        raise ValueError("t must be non-decreasing: it gives the order along the path.")
+    return P, t
+
+
+def simplify_path(
+    points: Union[np.ndarray, Sequence[Sequence[float]]],
+    n: Union[int, None] = None,
+    max_err: Union[float, None] = None,
+    t: Union[np.ndarray, Sequence[float], None] = None,
+) -> np.ndarray:
+    """
+    Simplify a curve through 2-D or 3-D space, such as an orbit, a
+    trajectory, or an HR-diagram track.
+
+    Uses the same greedy worst-error ranking as :func:`simplify_n`, with
+    the error of a sample measured as its Euclidean distance from the
+    simplified path *at the same parameter* ``t``.  All coordinates
+    share one set of kept samples, so the curve may loop or double back.
+
+    Parameters
+    ----------
+    points : array-like, shape (n_samples, n_dims)
+        The path, one row per sample in path order.  Any number of
+        dimensions works; coordinates should share units, because the
+        error is a Euclidean distance.  Rescale them first otherwise.
+    n : int, optional
+        Keep exactly ``n`` samples (at least 2).
+    max_err : float, optional
+        Keep the fewest samples (greedily) such that every original
+        sample lies within ``max_err`` of the simplified path at the
+        same ``t``.  Pass exactly one of ``n`` and ``max_err``.
+    t : array-like, optional
+        Non-decreasing parameter per sample, typically time.  Default:
+        cumulative arc length, which makes the error a purely
+        geometric distance.
+
+    Returns
+    -------
+    idx : np.ndarray
+        Sorted indices of the samples to keep; use ``points[idx]``
+        (and ``t[idx]`` or any other per-sample array).
+
+    Examples
+    --------
+    >>> s = np.linspace(0, 6 * np.pi, 20000)
+    >>> helix = np.column_stack([np.cos(s), np.sin(s), 0.1 * s])
+    >>> idx = simplify_path(helix, max_err=1e-3)
+    >>> helix_s = helix[idx]
+    """
+    P, t = _path_inputs(points, t)
+    if (n is None) == (max_err is None):
+        raise ValueError("simplify_path(): pass exactly one of n or max_err.")
+    if n is not None:
+        if int(n) != n or n < 2:
+            raise ValueError(f"simplify_path(): n must be an integer >= 2; got {n!r}.")
+        return np.sort(_importance_order(t, P, int(n)))
+    if not max_err >= 0:
+        raise ValueError(f"simplify_path(): max_err must be >= 0; got {max_err!r}.")
+    return _greedy_refine(t, P, np.array([0, P.shape[0] - 1]), max_err)
+
+
 def simplify_diagnostic(
     x_orig: Union[np.ndarray, Sequence[float]],
     y_orig: Union[np.ndarray, Sequence[float]],
@@ -2153,6 +2245,107 @@ def _simplify_animate_impl(
     plt.close(fig)
 
     print(f"Animation saved to '{save_path}' ({n_frames} frames, {duration:.1f}s).")
+
+
+def simplify_path_animate(
+    points: Union[np.ndarray, Sequence[Sequence[float]]],
+    save_path: str = "path.gif",
+    n: Union[int, None] = None,
+    max_err: Union[float, None] = None,
+    t: Union[np.ndarray, Sequence[float], None] = None,
+    fps: int = 20,
+    duration: float = 6.0,
+    title: str = "Path simplification",
+    labels: Sequence[str] = ("$x$", "$y$", "$z$"),
+) -> None:
+    """
+    Animated GIF of :func:`simplify_path` building up a 2-D or 3-D path.
+
+    The full path is drawn as a thin grey line and the simplified path
+    grows on top of it, adding samples in order of importance until it
+    reaches the set :func:`simplify_path` returns for ``n`` or
+    ``max_err``.  The caption reports the point count and the worst
+    distance from the original path.
+
+    Parameters
+    ----------
+    points : array-like, shape (n_samples, 2) or (n_samples, 3)
+        The path, one row per sample in path order.
+    save_path : str, optional
+        Output GIF path.  Default ``"path.gif"``.
+    n, max_err, t : optional
+        As in :func:`simplify_path`.  With neither ``n`` nor
+        ``max_err``, the animation builds up to 100 points.
+    fps, duration : optional
+        Frame rate and length in seconds.  The last 15 % holds the
+        final frame.
+    title : str, optional
+        Figure title.
+    labels : sequence of str, optional
+        Axis labels.
+
+    Examples
+    --------
+    >>> s = np.linspace(0, 6 * np.pi, 20000)
+    >>> helix = np.column_stack([np.cos(s), np.sin(s), 0.1 * s])
+    >>> simplify_path_animate(helix, "helix.gif", max_err=1e-3)
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation
+
+    P, t = _path_inputs(points, t)
+    dim = P.shape[1]
+    if dim not in (2, 3):
+        raise ValueError(f"simplify_path_animate() draws 2-D or 3-D paths; got {dim} columns.")
+    if n is None and max_err is None:
+        n = min(100, P.shape[0])
+    final = simplify_path(P, n=n, max_err=max_err, t=t)
+    # The final set is a prefix of the importance ranking, so every frame
+    # is a prefix too and frames are nested.
+    order = _importance_order(t, P, final.size)
+    frames = []
+    for k in np.unique(np.geomspace(2, max(final.size, 2), 40).astype(int)):
+        idx = np.sort(order[:k])
+        chord = np.column_stack([np.interp(t, t[idx], P[idx, c]) for c in range(dim)])
+        frames.append((idx, float(np.max(np.linalg.norm(P - chord, axis=1)))))
+
+    n_total = max(int(fps * duration), 1)
+    n_sweep = max(n_total - int(0.15 * n_total), 1)
+
+    with plt.style.context(str(_STYLE_FILE)):
+        fig = plt.figure(figsize=(5.5, 5.5))
+        ax = fig.add_subplot(projection="3d" if dim == 3 else None)
+        ax.plot(*P.T, "-", color="#8c8c8c", lw=1.0, label=f"input ({P.shape[0]} points)")
+        line, = ax.plot(*P[frames[0][0]].T, "o-", color="#d62728", lw=1.2, ms=3,
+                        label="simplified")
+        ax.set_xlabel(labels[0])
+        ax.set_ylabel(labels[1])
+        if dim == 3:
+            ax.set_zlabel(labels[2])
+        else:
+            ax.set_aspect("equal", adjustable="datalim")
+        # Title on top, live caption under it, legend in a strip below the
+        # plot: nothing overlaps the path.
+        fig.suptitle(title)
+        caption = ax.set_title("", fontsize=12)
+        legend = fig.legend(loc="lower center", ncol=2, fontsize=10)
+        fig.subplots_adjust(left=0.16, right=0.95, top=0.86, bottom=0.2)
+
+        def _update(f):
+            idx, err = frames[min(len(frames) - 1, f * len(frames) // n_sweep)]
+            if dim == 3:
+                line.set_data_3d(*P[idx].T)
+            else:
+                line.set_data(*P[idx].T)
+            legend.get_texts()[1].set_text(f"simplified ($n = {idx.size}$)")
+            caption.set_text(f"$n = {idx.size}$    max error $= {err:.2g}$")
+            return line, caption
+
+        FuncAnimation(fig, _update, frames=n_total, blit=False).save(
+            save_path, writer="pillow", fps=fps, dpi=100,
+        )
+        plt.close(fig)
+    print(f"Animation saved to '{save_path}' ({n_total} frames, {duration:.1f}s).")
 
 
 # =============================================================================

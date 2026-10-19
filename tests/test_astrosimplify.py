@@ -353,3 +353,51 @@ def test_bubble_density_is_in_cm3_and_isobaric():
     _, log_n = np.loadtxt(ROOT / "data" / "bubble_n.dat").T
     assert -1 < log_n.min() and log_n.max() < 4          # cm^-3, not pc^-3
     assert np.ptp(log_n + log_t) < 1e-6                   # n T = const
+
+
+# --------------------------------------------------------------------------
+# 2-D / 3-D paths
+# --------------------------------------------------------------------------
+def helix(n=5000):
+    s = np.linspace(0, 6 * np.pi, n)
+    return np.column_stack([np.cos(s), np.sin(s), 0.1 * s])
+
+
+def path_error(P, t, idx):
+    chord = np.column_stack([np.interp(t, t[idx], P[idx, c]) for c in range(P.shape[1])])
+    return float(np.max(np.linalg.norm(P - chord, axis=1)))
+
+
+def test_simplify_path_bound_holds_at_same_parameter():
+    P = helix()
+    t = np.linspace(0, 1, len(P)) ** 2          # uneven time sampling
+    idx = a.simplify_path(P, max_err=1e-3, t=t)
+    assert path_error(P, t, idx) <= 1e-3
+    assert idx[0] == 0 and idx[-1] == len(P) - 1
+
+
+def test_simplify_path_handles_curves_that_double_back():
+    s = np.linspace(0, 2 * np.pi, 4000)
+    circle = np.column_stack([np.cos(s), np.sin(s)])   # not a function of x
+    idx = a.simplify_path(circle, n=40)
+    assert idx.size == 40 and np.all(np.diff(idx) > 0)
+
+
+def test_simplify_path_matches_1d_ranking():
+    x, y = a.random_test_curve(npts=2000, seed=5)
+    np.testing.assert_array_equal(
+        a.simplify_path(y[:, None], n=60, t=x), np.sort(a._importance_order(x, y, 60))
+    )
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"n": 10, "max_err": 0.1}, {"n": 1}])
+def test_simplify_path_rejects_bad_arguments(kwargs):
+    with pytest.raises(ValueError):
+        a.simplify_path(helix(100), **kwargs)
+
+
+@pytest.mark.parametrize("dims", [2, 3])
+def test_simplify_path_animate_writes_gif(tmp_path, dims):
+    out = tmp_path / f"p{dims}.gif"
+    a.simplify_path_animate(helix(800)[:, :dims], str(out), n=30, duration=0.5, fps=6)
+    assert out.stat().st_size > 0
